@@ -1,0 +1,10 @@
+# Local Claude Code tooling / config (machine-specific, not part of the product)
+.claude/
+
+# Temp verification artifacts
+_serve.mjs
+_test.mjs
+*.png
+.playwright-cli/
+原型.html.playwright-cli/
+*.yaml

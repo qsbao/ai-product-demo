@@ -497,12 +497,26 @@ function openIssue(id, tab){
 }
 function footFor(i){
   let btns="";
-  if(i.status==="处理中") btns=`<button class="btn primary" onclick="submitApproval('${i.id}');openIssue('${i.id}')">提交审批</button>`;
-  if(i.status==="已批准") btns=`<button class="btn ok" onclick="resolveIssue('${i.id}');openIssue('${i.id}')">标记解决</button>`;
-  if(i.status==="已解决") btns=`<button class="btn" onclick="createReport('${i.id}');closeDrawer()">发起汇报</button>`;
+  if(store.role==="审批经理" && i.status==="审批中"){
+    // 审批经理打开抽屉 → 直接批/驳，无需关闭回列表
+    btns = `<button class="btn ok" onclick="approveFromDrawer('${i.id}')">批准</button>`
+         + `<button class="btn danger" onclick="rejectPrompt('${i.id}')">打回</button>`;
+  } else {
+    if(i.status==="处理中") btns=`<button class="btn primary" onclick="submitApproval('${i.id}');openIssue('${i.id}')">提交审批</button>`;
+    if(i.status==="已批准") btns=`<button class="btn ok" onclick="resolveIssue('${i.id}');openIssue('${i.id}')">标记解决</button>`;
+    if(i.status==="已解决") btns=`<button class="btn" onclick="createReport('${i.id}');closeDrawer()">发起汇报</button>`;
+  }
   return btns
     + `<button class="btn ghost" onclick="openIssuePage('${i.id}')" title="整页可收藏/分享/打印">⤢ 展开为整页</button>`
     + `<button class="btn ghost" onclick="closeDrawer()">关闭</button>`;
+}
+// 抽屉内批准后：若仍在审批中（升到下一级）刷新抽屉，否则（走完链）关闭
+function approveFromDrawer(id){ approve(id); const i=issueById(id); if(i && i.status==="审批中") openIssue(id); else closeDrawer(); }
+// 角色感知的行内动作（详情整页工具条复用）
+function actionsInline(i){
+  if(store.role==="审批经理" && i.status==="审批中")
+    return `<button class="btn ok sm" onclick="approve('${i.id}')">批准</button><button class="btn danger sm" onclick="rejectPrompt('${i.id}')">打回</button>`;
+  return primaryAction(i);
 }
 
 /* 整页：同一组区块全部展开、不裁剪——独立地址，服务"研究/追溯/分享/打印" */
@@ -521,7 +535,7 @@ VIEWS["Issue 详情页"] = ()=>{
   const back=store.detailReturn||"Issue 全表";
   const card=(t,html,pad)=>`<div class="sec">${t}</div><div class="card"${pad?' style="padding:14px 16px"':''}>${html}</div>`;
   return `
-    <div class="toolbar"><button class="btn ghost sm" onclick="go('${back}')">← 返回${back}</button>${primaryAction(i)}</div>
+    <div class="toolbar"><button class="btn ghost sm" onclick="go('${back}')">← 返回${back}</button>${actionsInline(i)}</div>
     <div id="pageDeep" class="hint">🔗 深链：<span class="mono">运营系统/issues/${i.id}</span> —— 整页有独立地址，可收藏 / 分享 / 打印；与抽屉<b>共用同一组区块渲染器</b>，区别只是这里全部展开、不裁剪。</div>
     <div class="pagehead"><h1>${i.title} ${statusTag(i.status)} ${isOverdue(i)?'<span class="tag t-danger">已超时</span>':''}</h1>
       <p>${i.id} · ${i.site} · 负责人 ${i.owner} · <span class="tag t-gray">Tier-1 实体详情页</span></p></div>
@@ -548,12 +562,12 @@ VIEWS["待我审批"] = ()=>{
   const list=derive.myApprovals();
   const rows=list.map(i=>{
     const cur=i.approvalChain[i.currentLevel-1];
-    return `<div class="row">
+    return `<div class="row clickable" onclick="openIssue('${i.id}')">
       <div class="grow">
         <div class="title">${i.title} ${statusTag("审批中")} ${isOverdue(i)?'<span class="tag t-danger">已超时</span>':''}</div>
         <div class="sub">${i.id} · ${i.site} · 负责人 ${i.owner} · <b>轮到：${cur?.role} ${cur?.name}</b>（第 ${i.currentLevel}/${i.approvalChain.length} 级）</div>
       </div>
-      <div class="actions">
+      <div class="actions" onclick="event.stopPropagation()">
         <button class="btn ok sm" onclick="approve('${i.id}')">批准</button>
         <button class="btn danger sm" onclick="rejectPrompt('${i.id}')">打回</button>
         <button class="btn ghost sm" onclick="openIssue('${i.id}')">查看</button>

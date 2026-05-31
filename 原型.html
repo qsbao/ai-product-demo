@@ -97,6 +97,19 @@
   .drawer .foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap;background:#fafbfc}
   .x{margin-left:auto;border:none;background:transparent;font-size:20px;color:var(--ink3);cursor:pointer}
   .sec{font-size:12px;color:var(--ink3);text-transform:uppercase;letter-spacing:.6px;margin:18px 0 8px}
+  /* drawer 分页签 + 富详情区块 */
+  .dtabs{display:flex;gap:2px;padding:0 14px;border-bottom:1px solid var(--line);background:#fff;flex-shrink:0}
+  .dtabs .tab{border-radius:0;background:transparent;box-shadow:none;border-bottom:2px solid transparent;padding:11px 13px;color:var(--ink2)}
+  .dtabs .tab.active{background:transparent;box-shadow:none;color:var(--brand);font-weight:600;border-bottom-color:var(--brand)}
+  .prose{font-size:13px;color:var(--ink2);line-height:1.65;margin:2px 0 4px}
+  .cmt{display:flex;gap:9px;padding:9px 0;border-bottom:1px dashed var(--line2)}
+  .cmt:last-child{border-bottom:none}
+  .cmt .av{width:26px;height:26px;border-radius:50%;background:#e6efff;color:var(--brand);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .cmt .who{font-weight:600;font-size:12.5px}
+  .cmt .txt{font-size:12.5px;color:var(--ink2);margin-top:1px}
+  .cmt .ts{font-size:11px;color:var(--ink3);margin-top:1px}
+  .filerow{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line2);font-size:13px}
+  .filerow:last-child{border-bottom:none}
   /* timeline */
   .tl{position:relative;padding-left:22px}
   .tl::before{content:"";position:absolute;left:6px;top:4px;bottom:4px;width:2px;background:var(--line)}
@@ -182,6 +195,8 @@ function seed(){
   store = {
     role: "工程师",
     view: "分诊收件箱",
+    detailIssueId: null,   // 当前整页详情查看的 Issue
+    detailReturn: null,    // 从哪个视图进入整页（返回用）
     alarms: [
       a("Fab2-CMP","研磨头压力越限","high",-2),
       a("Fab2-CMP","研磨头压力越限","high",-2),       // 同站同类→可聚合
@@ -205,18 +220,31 @@ function seed(){
   };
   // store 已存在，现在安全填充预置 Issue（mkIssue→ev 会写 store.log）
   store.issues = [
-    mkIssue("Fab3-Litho","曝光剂量持续漂移影响良率", -30, "审批中", 1),
-    mkIssue("Fab2-Etch","刻蚀腔体温度异常待复核", -10, "处理中", 0),
+    mkIssue("Fab3-Litho","曝光剂量持续漂移影响良率", -30, "审批中", 1, {
+      desc:"Fab3 Litho 区 ASML-07 曝光机，自上周保养后曝光剂量(Dose)持续正向漂移，CDU 跌出工艺窗口，已波及 3 个批次、良率影响约 1.8%（超 1.5% 阈值需上会）。",
+      rootCause:"初判保养后能量传感器标定偏移，叠加光源老化；待 FDC 量测对比确认。",
+      affectedLots:[{lot:"L3-2218",wafers:25,stage:"曝光后量测"},{lot:"L3-2221",wafers:25,stage:"显影"},{lot:"L3-2225",wafers:13,stage:"涂胶"}],
+      relatedAlarms:[{id:"AL-2287",type:"曝光剂量漂移",time:"今日 06:12"},{id:"AL-2279",type:"CDU 越限",time:"昨日 22:40"}],
+      params:[{name:"曝光剂量 Dose",value:"31.4 mJ/cm²",spec:"30.0 ± 0.5",status:"越上限"},{name:"CDU (3σ)",value:"4.8 nm",spec:"≤ 4.0",status:"越上限"},{name:"对焦偏移 Focus",value:"-3 nm",spec:"± 10",status:"正常"}],
+      attachments:[{name:"FDC_trend_ASML07.csv",size:"212 KB"},{name:"CDU_map_L3-2218.png",size:"1.1 MB"}],
+      comments:[{actor:"赵工",text:"已联系设备组复标能量传感器，预计今日下午完成。",ts:"今日 09:20"},{actor:"周经理",text:"良率影响超阈值，需安排本周评审会汇报。",ts:"今日 09:35"}],
+    }),
+    mkIssue("Fab2-Etch","刻蚀腔体温度异常待复核", -10, "处理中", 0, {
+      desc:"Fab2 Etch 区 LAM-03 刻蚀腔体温度读数较基线偏高约 4℃，待复核是传感器漂移还是实际工艺异常。",
+      params:[{name:"腔体温度",value:"68.2 ℃",spec:"64 ± 2",status:"越上限"}],
+    }),
   ];
   // 给预置 issue 一条初始通知/事件
   pushNotif("审批经理", store.issues[0].id, `Issue ${store.issues[0].id}「${store.issues[0].title}」待你审批`, "待我审批");
 }
-function mkIssue(site,title,hAgo,status,level){
+function mkIssue(site,title,hAgo,status,level,extra){
   const id = "ISS-"+(++seq.issue);
   const owner = RULES.siteOwners[site] || "未分派";
   const chain = RULES.approvalLadder.map((r,i)=>({ level:i+1, role:r, name:roleName(r) }));
   const iss = { id, title, site, owner, status, currentLevel:level||0, approvalChain:chain,
-    createdAt:hAgo, sourceAlarmId:null, events:[], reportIds:[], pinned:false };
+    createdAt:hAgo, sourceAlarmId:null, events:[], reportIds:[], pinned:false,
+    desc:"", rootCause:"", affectedLots:[], relatedAlarms:[], params:[], attachments:[], comments:[],
+    ...(extra||{}) };
   ev(iss,"创建","系统",`由告警升级创建，按注册表分派给 ${owner}，已快照审批链`,true);
   if(status==="审批中"){ ev(iss,"提交审批",owner,`提交至 ${chain[0].role}`,true); }
   return iss;
@@ -295,7 +323,7 @@ function navItem(v,ic,badge){
 function renderTop(){
   const sub = { "分诊收件箱":"工程师 · 入口时刻","Issue 工作台":"工程师 · 推进时刻","待我审批":"审批经理 · 轮到我",
     "待汇报清单":"汇报人 · 会前","会议议程":"汇报人 · 会中","接入健康":"管理员 · 入口","通知中心":"跨角色 · 早间",
-    "Issue 全表":"Tier-1 · 全量浏览（只读为主）" }[store.view]||"";
+    "Issue 全表":"Tier-1 · 全量浏览（只读为主）", "Issue 详情页":"Tier-1 · 实体详情（全量展开）" }[store.view]||"";
   document.getElementById("crumb").innerHTML = `${store.view} <small>${sub} · ${clockLabel()}</small>`;
 }
 function renderBell(){
@@ -339,7 +367,8 @@ function escalate(id){
   const id2="ISS-"+(++seq.issue);
   const chain=RULES.approvalLadder.map((r,i)=>({level:i+1,role:r,name:roleName(r)}));
   const iss={ id:id2, title:a.type+"（升级自告警）", site:a.site, owner, status:"处理中", currentLevel:0,
-    approvalChain:chain, createdAt:CLOCK, sourceAlarmId:a.id, events:[], reportIds:[], pinned:false };
+    approvalChain:chain, createdAt:CLOCK, sourceAlarmId:a.id, events:[], reportIds:[], pinned:false,
+    desc:"", rootCause:"", affectedLots:[], relatedAlarms:[{id:a.id,type:a.type,time:tsNow()}], params:[], attachments:[], comments:[] };
   ev(iss,"创建","你",`由告警 ${a.id} 升级；按注册表分派给 ${owner}；快照审批链 ${chain.map(c=>c.role).join("→")}`,true);
   store.issues.unshift(iss);
   toast(`已创建 ${id2}，分派给 ${owner} → 见 Issue 工作台`);
@@ -388,33 +417,131 @@ function submitApproval(id){ const i=issueById(id); i.status="审批中"; i.curr
 }
 function resolveIssue(id){ const i=issueById(id); i.status="已解决"; i.pinned=false; ev(i,"标记解决","你","工程师确认问题已解决",true); toast("已标记解决 → 可发起汇报"); render(); }
 
-/* 事件时间线 = Issue 详情抽屉内的只读区块 */
-function openIssue(id){
-  const i=issueById(id);
+/* ---- Issue 详情：抽屉(裁剪+分页签) 与 整页(全量) 共用同一组区块渲染器 ----
+   关键纪律：一份内容、两种载体。区块渲染器是唯一真相；抽屉裁剪+分页签服务"推进"，
+   整页全量展开服务"研究/追溯/分享/打印"。改字段只改这里，两处不漂移。 */
+function secMeta(i){
+  return `
+    <div class="kv"><b>状态</b><span>${statusTag(i.status)} ${isOverdue(i)?'<span class="tag t-danger">已超时</span>':''}</span></div>
+    <div class="kv"><b>负责人</b><span>${i.owner}（按 site→owner 注册表解析）</span></div>
+    <div class="kv"><b>站点</b><span>${i.site}</span></div>
+    <div class="kv"><b>来源</b><span>${i.sourceAlarmId? "升级自告警 "+i.sourceAlarmId : "预置"}</span></div>
+    <div class="kv"><b>时效</b><span>${isOverdue(i)?'<span class="tag t-danger">已超时</span>':(["处理中","审批中"].includes(i.status)? "剩 "+hoursLeft(i)+"h":"—")}</span></div>`;
+}
+function secChain(i){
   const chain=i.approvalChain.map(c=>{
     const done=i.status!=="审批中"? (i.status==="已批准"||i.status==="已解决"||i.status==="已关闭") : c.level<i.currentLevel;
     const cur=i.status==="审批中"&&c.level===i.currentLevel;
     return `<span class="node ${done?'done':''} ${cur?'cur':''}">${c.role}·${c.name}${done?' ✓':cur?' …':''}</span>`;
   }).join('<span class="arr">→</span>');
-  const tl=[...i.events].reverse().map(e=>`<div class="ev ${e.decision?'decision':''}"><div class="t">${e.type}</div><div class="m">${e.text}</div><div class="ts">${e.actor} · ${e.ts}</div></div>`).join("");
-  const reps = i.reportIds.map(rid=>reportById(rid)).filter(Boolean)
-    .map(r=>`<div class="kv"><b>汇报</b><span>${r.id} · ${reportStatusTag(r.status)} · ${r.meetingId? meetingById(r.meetingId).title : "未排期"}</span></div>`).join("") || `<div class="muted" style="font-size:12.5px">暂无汇报</div>`;
-  drawer(`${i.title}`, `${i.id} · ${i.site}`, `
-    <div class="kv"><b>状态</b><span>${statusTag(i.status)} ${isOverdue(i)?'<span class="tag t-danger">已超时</span>':''}</span></div>
-    <div class="kv"><b>负责人</b><span>${i.owner}（按 site→owner 注册表解析）</span></div>
-    <div class="kv"><b>来源</b><span>${i.sourceAlarmId? "升级自告警 "+i.sourceAlarmId : "预置"}</span></div>
-    <div class="sec">审批链（创建时快照）</div><div class="chain">${chain}</div>
-    <div class="sec">汇报记录</div>${reps}
-    <div class="sec">事件时间线（append-only · 只读追溯）</div><div class="tl">${tl}</div>
-  `, footFor(i));
+  return `<div class="chain">${chain}</div>`;
+}
+function secAnalysis(i){
+  if(!i.desc && !i.rootCause) return `<div class="muted" style="font-size:12.5px">暂无问题描述</div>`;
+  return `${i.desc?`<div class="prose">${i.desc}</div>`:""}${i.rootCause?`<div class="prose"><b>根因分析：</b>${i.rootCause}</div>`:""}`;
+}
+function secAffected(i){
+  if(!i.affectedLots||!i.affectedLots.length) return `<div class="empty" style="padding:18px">暂无受影响批次</div>`;
+  const rows=i.affectedLots.map(l=>`<tr><td class="mono">${l.lot}</td><td style="text-align:center">${l.wafers}</td><td>${l.stage}</td></tr>`).join("");
+  return `<table class="tbl"><thead><tr><th>批次 Lot</th><th style="text-align:center">片数</th><th>当前工序</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function secAlarms(i){
+  if(!i.relatedAlarms||!i.relatedAlarms.length) return `<div class="empty" style="padding:18px">无关联告警</div>`;
+  return i.relatedAlarms.map(a=>`<div class="filerow"><span class="sev high"></span><span class="mono">${a.id}</span><span class="grow">${a.type}</span><span class="muted">${a.time}</span></div>`).join("");
+}
+function secParams(i){
+  if(!i.params||!i.params.length) return `<div class="empty" style="padding:18px">暂无量测参数</div>`;
+  const rows=i.params.map(p=>`<tr><td>${p.name}</td><td class="mono">${p.value}</td><td class="muted">${p.spec}</td><td>${p.status==="正常"?'<span class="tag t-ok">正常</span>':'<span class="tag t-danger">'+p.status+'</span>'}</td></tr>`).join("");
+  return `<table class="tbl"><thead><tr><th>参数</th><th>实测</th><th>规格</th><th>判定</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function secAttachments(i){
+  if(!i.attachments||!i.attachments.length) return `<div class="empty" style="padding:18px">无附件</div>`;
+  return i.attachments.map(f=>`<div class="filerow"><span>📎</span><span class="grow">${f.name}</span><span class="muted">${f.size}</span></div>`).join("");
+}
+function secReports(i){
+  return i.reportIds.map(rid=>reportById(rid)).filter(Boolean)
+    .map(r=>`<div class="kv"><b>汇报</b><span>${r.id} · ${reportStatusTag(r.status)} · ${r.meetingId? meetingById(r.meetingId).title : "未排期"}</span></div>`).join("")
+    || `<div class="muted" style="font-size:12.5px">暂无汇报</div>`;
+}
+function secTimeline(i){
+  return `<div class="tl">`+[...i.events].reverse().map(e=>`<div class="ev ${e.decision?'decision':''}"><div class="t">${e.type}</div><div class="m">${e.text}</div><div class="ts">${e.actor} · ${e.ts}</div></div>`).join("")+`</div>`;
+}
+function secDiscussion(i){
+  if(!i.comments||!i.comments.length) return `<div class="muted" style="font-size:12.5px">暂无讨论</div>`;
+  return i.comments.map(c=>`<div class="cmt"><div class="av">${c.actor.slice(0,1)}</div><div class="grow"><div class="who">${c.actor}</div><div class="txt">${c.text}</div><div class="ts">${c.ts}</div></div></div>`).join("");
+}
+
+/* 抽屉：内容多 → 分页签(概览/事件/关联/讨论)，每段内再分区；当前主动作常驻底部 */
+function openIssue(id, tab){
+  const i=issueById(id); if(!i) return;
+  tab = tab || "概览";
+  const TABS=["概览","事件","关联","讨论"];
+  const tabBar=TABS.map(t=>`<button class="tab ${tab===t?'active':''}" onclick="openIssue('${id}','${t}')">${t}</button>`).join("");
+  let body="";
+  if(tab==="概览"){
+    body = secMeta(i)
+      + `<div class="sec">问题与根因</div>`+secAnalysis(i)
+      + `<div class="sec">审批链（创建时快照）</div>`+secChain(i)
+      + `<div class="sec">汇报记录</div>`+secReports(i);
+  } else if(tab==="事件"){
+    body = `<div class="sec">事件时间线（append-only · 只读追溯）</div>`+secTimeline(i);
+  } else if(tab==="关联"){
+    body = `<div class="sec">受影响批次</div>`+secAffected(i)
+      + `<div class="sec">关键参数 / 量测</div>`+secParams(i)
+      + `<div class="sec">关联告警</div>`+secAlarms(i)
+      + `<div class="sec">附件</div>`+secAttachments(i);
+  } else {
+    body = `<div class="sec">讨论 / 备注</div>`+secDiscussion(i);
+  }
+  drawer(`${i.title}`, `${i.id} · ${i.site}`, body, footFor(i), tabBar);
 }
 function footFor(i){
   let btns="";
   if(i.status==="处理中") btns=`<button class="btn primary" onclick="submitApproval('${i.id}');openIssue('${i.id}')">提交审批</button>`;
   if(i.status==="已批准") btns=`<button class="btn ok" onclick="resolveIssue('${i.id}');openIssue('${i.id}')">标记解决</button>`;
   if(i.status==="已解决") btns=`<button class="btn" onclick="createReport('${i.id}');closeDrawer()">发起汇报</button>`;
-  return btns+`<button class="btn ghost" onclick="closeDrawer()">关闭</button>`;
+  return btns
+    + `<button class="btn ghost" onclick="openIssuePage('${i.id}')" title="整页可收藏/分享/打印">⤢ 展开为整页</button>`
+    + `<button class="btn ghost" onclick="closeDrawer()">关闭</button>`;
 }
+
+/* 整页：同一组区块全部展开、不裁剪——独立地址，服务"研究/追溯/分享/打印" */
+function openIssuePage(id){
+  const i=issueById(id); if(!i) return;
+  if(store.view!=="Issue 详情页") store.detailReturn=store.view;
+  store.detailIssueId=id;
+  closeDrawer();
+  store.view="Issue 详情页";
+  render();
+  setTimeout(()=>{ const h=document.getElementById("pageDeep"); if(h) h.classList.add("flash"); },60);
+}
+VIEWS["Issue 详情页"] = ()=>{
+  const i=issueById(store.detailIssueId);
+  if(!i) return `<div class="empty">未选择 Issue（请从工作台或 Issue 全表点开）</div>`;
+  const back=store.detailReturn||"Issue 全表";
+  const card=(t,html,pad)=>`<div class="sec">${t}</div><div class="card"${pad?' style="padding:14px 16px"':''}>${html}</div>`;
+  return `
+    <div class="toolbar"><button class="btn ghost sm" onclick="go('${back}')">← 返回${back}</button>${primaryAction(i)}</div>
+    <div id="pageDeep" class="hint">🔗 深链：<span class="mono">运营系统/issues/${i.id}</span> —— 整页有独立地址，可收藏 / 分享 / 打印；与抽屉<b>共用同一组区块渲染器</b>，区别只是这里全部展开、不裁剪。</div>
+    <div class="pagehead"><h1>${i.title} ${statusTag(i.status)} ${isOverdue(i)?'<span class="tag t-danger">已超时</span>':''}</h1>
+      <p>${i.id} · ${i.site} · 负责人 ${i.owner} · <span class="tag t-gray">Tier-1 实体详情页</span></p></div>
+    <div class="grid2">
+      <div>
+        ${card("关键信息", secMeta(i), true)}
+        ${card("问题与根因", secAnalysis(i), true)}
+        ${card("审批链（创建时快照）", secChain(i), true)}
+        ${card("受影响批次", secAffected(i))}
+        ${card("关键参数 / 量测", secParams(i))}
+      </div>
+      <div>
+        ${card("事件时间线（append-only）", secTimeline(i), true)}
+        ${card("关联告警", secAlarms(i))}
+        ${card("附件", secAttachments(i))}
+        ${card("汇报记录", secReports(i), true)}
+        ${card("讨论 / 备注", secDiscussion(i), true)}
+      </div>
+    </div>`;
+};
 
 /* ---- 4. 待我审批（审批经理·whose-turn） ---- */
 VIEWS["待我审批"] = ()=>{
@@ -632,9 +759,10 @@ function focusSearch(){ const el=document.querySelector('#main input'); if(el){ 
 /* ============================================================
    抽屉 / toast / 重置
    ============================================================ */
-function drawer(title,sub,bodyHtml,footHtml){
+function drawer(title,sub,bodyHtml,footHtml,tabsHtml){
   const d=document.getElementById("drawer");
   d.innerHTML=`<header><div><h2>${title}</h2><div class="muted" style="font-size:12.5px">${sub}</div></div><button class="x" onclick="closeDrawer()">×</button></header>
+    ${tabsHtml?`<div class="dtabs">${tabsHtml}</div>`:""}
     <div class="body">${bodyHtml}</div><div class="foot">${footHtml||""}</div>`;
   d.classList.add("open"); document.getElementById("scrim").classList.add("open");
 }

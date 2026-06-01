@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>产品设计方法 · 交互教程</title>
+<style>
+  :root{
+    --bg:#f4f6f9; --panel:#ffffff; --ink:#1f2733; --ink2:#5b6573; --ink3:#8a93a2;
+    --line:#e6eaf0; --line2:#eef1f6; --brand:#2563eb; --brand-ink:#fff;
+    --ok:#15a36a; --okbg:#e7f6ee; --warn:#d97706; --warnbg:#fdf2e0;
+    --danger:#dc2626; --dangerbg:#fde8e8; --info:#0e7490; --infobg:#e2f3f7;
+    --purple:#7c3aed; --purplebg:#f0eafe;
+    --radius:10px; --shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.08);
+    --shadow-lg:0 10px 30px rgba(16,24,40,.18);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--ink);font-size:14px;line-height:1.55;}
+  button{font-family:inherit;cursor:pointer}
+  .app{display:grid;grid-template-columns:248px 1fr;grid-template-rows:56px 1fr;height:100vh;grid-template-areas:"side top" "side main";}
+  .topbar{grid-area:top;background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;padding:0 22px;}
+  .side{grid-area:side;background:#0f172a;color:#cbd5e1;display:flex;flex-direction:column;padding:14px 0;overflow:auto;}
+  .main{grid-area:main;overflow:auto;padding:26px 32px;}
+  .brand{padding:4px 18px 12px;font-weight:700;color:#fff;font-size:15px;letter-spacing:.4px;display:flex;align-items:center;gap:8px;}
+  .brand .dot{width:9px;height:9px;border-radius:50%;background:#38bdf8;box-shadow:0 0 0 4px rgba(56,189,248,.18)}
+  .brand small{display:block;font-weight:400;color:#64748b;font-size:11.5px;letter-spacing:0;margin-top:2px}
+  .navlabel{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.8px;padding:12px 20px 4px;}
+  .navitem{display:flex;align-items:center;gap:11px;padding:10px 18px;color:#cbd5e1;font-size:13.5px;border-left:3px solid transparent;}
+  .navitem:hover{background:#1e293b;color:#fff}
+  .navitem.active{background:#1e293b;color:#fff;border-left-color:var(--brand);font-weight:600}
+  .navitem .num{width:22px;height:22px;border-radius:50%;border:1.5px solid #475569;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;color:#94a3b8}
+  .navitem.active .num{border-color:#38bdf8;color:#38bdf8}
+  .navitem.done .num{background:var(--ok);border-color:var(--ok);color:#fff}
+  .navitem .nt{flex:1;min-width:0}
+  /* topbar */
+  .crumb{font-weight:650;font-size:16px}
+  .spacer{flex:1}
+  .progress-wrap{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--ink2)}
+  .pbar{width:150px;height:8px;background:#e6eaf0;border-radius:6px;overflow:hidden}
+  .pbar i{display:block;height:100%;background:var(--ok);transition:width .35s ease}
+  .btn{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;padding:8px 13px;font-size:13px;font-weight:500}
+  .btn:hover{border-color:#cbd5e1;background:#fafbfc}
+  .btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+  .btn.primary:hover{background:#1d4ed8}
+  .btn.ok{background:var(--ok);border-color:var(--ok);color:#fff}
+  .btn.warn{background:var(--warn);border-color:var(--warn);color:#fff}
+  .btn.danger{background:var(--danger);border-color:var(--danger);color:#fff}
+  .btn.ghost{background:transparent}
+  .btn.sm{padding:5px 10px;font-size:12.5px}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  /* lesson */
+  .wrap{max-width:880px}
+  .eyebrow{font-size:12px;font-weight:700;color:var(--brand);text-transform:uppercase;letter-spacing:1px}
+  h1.t{font-size:24px;margin:6px 0 4px}
+  .lead{font-size:15px;color:var(--ink);background:#f8fafc;border-left:3px solid var(--brand);padding:13px 16px;border-radius:8px;margin:16px 0 4px}
+  .lesson h2{font-size:16px;margin:24px 0 8px}
+  .lesson p{color:var(--ink2);margin:9px 0}
+  .lesson b{color:var(--ink)}
+  /* exercise */
+  .exercise{border:1px solid #d6e4ff;background:#f7faff;border-radius:12px;padding:17px 19px;margin:20px 0}
+  .xlabel{font-size:12px;font-weight:700;color:var(--brand);text-transform:uppercase;letter-spacing:.6px;margin-bottom:11px;display:flex;align-items:center;gap:6px}
+  .qz{font-weight:600;margin-bottom:11px}
+  .opts{display:flex;flex-direction:column;gap:8px}
+  .opt{text-align:left;border:1px solid var(--line);background:#fff;border-radius:9px;padding:11px 13px;font-size:13.5px;color:var(--ink);transition:.12s}
+  .opt:hover:not(:disabled){border-color:var(--brand);background:#fafdff}
+  .opt.correct{border-color:var(--ok);background:var(--okbg);color:#0c7a4e;font-weight:600}
+  .opt.wrong{border-color:var(--danger);background:var(--dangerbg);color:#b42323;font-weight:600}
+  .opt.faint{border-color:#bfe8d2;background:#f2fbf6}
+  .opt:disabled{cursor:default}
+  .feedback{margin-top:12px;padding:11px 13px;border-radius:9px;font-size:13px;line-height:1.65}
+  .feedback.good{background:var(--okbg);color:#0c7a4e;border:1px solid #bfe8d2}
+  .feedback.bad{background:#fff4f4;color:#b42323;border:1px solid #f3cccc}
+  .key{background:#0f172a;color:#e2e8f0;border-radius:12px;padding:15px 17px;margin:20px 0;font-size:13.5px;line-height:1.75}
+  .key .kh{color:#7dd3fc;font-weight:700;display:block;margin-bottom:4px;font-size:12px;letter-spacing:.5px;text-transform:uppercase}
+  .key b{color:#fde68a}
+  /* shared components from prototype */
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);}
+  .row{display:flex;align-items:center;gap:14px;padding:13px 16px;border-bottom:1px solid var(--line2);}
+  .row:last-child{border-bottom:none}
+  .row.pinned{background:linear-gradient(90deg,#fff7ed,#fff 60%);}
+  .row .grow{flex:1;min-width:0}
+  .row .title{font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px}
+  .row .sub{color:var(--ink3);font-size:12.5px;margin-top:2px}
+  .row .actions{display:flex;gap:7px;flex-shrink:0}
+  .tag{font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:20px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
+  .t-ok{background:var(--okbg);color:var(--ok)} .t-warn{background:var(--warnbg);color:var(--warn)}
+  .t-danger{background:var(--dangerbg);color:var(--danger)} .t-info{background:var(--infobg);color:var(--info)}
+  .t-purple{background:var(--purplebg);color:var(--purple)} .t-gray{background:#eef1f6;color:var(--ink2)}
+  .t-brand{background:#e6efff;color:var(--brand)}
+  .sev{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .sev.high{background:#dc2626} .sev.mid{background:#d97706} .sev.low{background:#16a34a}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .muted{color:var(--ink3)}
+  .chain{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0}
+  .chain .node{padding:5px 12px;border-radius:20px;background:#eef1f6;font-size:12.5px;color:var(--ink2)}
+  .chain .node.done{background:var(--okbg);color:var(--ok)}
+  .chain .node.cur{background:var(--brand);color:#fff;font-weight:600}
+  .chain .arr{color:var(--ink3)}
+  .tbl{width:100%;border-collapse:collapse;font-size:13px}
+  .tbl th{text-align:left;padding:10px 13px;color:var(--ink3);font-weight:600;font-size:12px;border-bottom:1px solid var(--line);white-space:nowrap;background:#fafbfc}
+  .tbl td{padding:10px 13px;border-bottom:1px solid var(--line2);vertical-align:middle}
+  .tbl tbody tr:last-child td{border-bottom:none}
+  .tbl th.hot,.tbl td.hot{background:#fff7e6}
+  .tbl th.hot{color:var(--warn)}
+  .mono{font-family:ui-monospace,"Consolas",monospace;color:var(--ink2)}
+  .tognav{display:inline-flex;background:#eef1f6;border-radius:10px;padding:4px;gap:4px;margin-bottom:14px}
+  .tognav button{padding:7px 14px;border-radius:7px;font-size:13px;color:var(--ink2);border:none;background:transparent;font-weight:500}
+  .tognav button.on{background:#fff;color:var(--ink);font-weight:600;box-shadow:var(--shadow)}
+  .anno{font-size:12.5px;color:var(--ink2);background:#fffdf5;border:1px dashed #e7d9a6;border-radius:8px;padding:9px 12px;margin-top:10px}
+  .fieldrow{display:flex;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px dashed var(--line2)}
+  .fieldrow:last-child{border-bottom:none}
+  .pill{border:1px solid var(--line);border-radius:20px;padding:5px 13px;font-size:12.5px;font-weight:600;min-width:96px;text-align:center;background:#fff;color:var(--ink3)}
+  .pill.fact{background:var(--infobg);color:var(--info);border-color:#bfe3ea}
+  .pill.op{background:var(--purplebg);color:var(--purple);border-color:#dccffb}
+  .mark{font-size:12.5px;font-weight:700;width:18px;display:inline-block;text-align:center}
+  .mark.r{color:var(--ok)} .mark.w{color:var(--danger)}
+  .checkitem{display:flex;gap:11px;align-items:flex-start;padding:10px 4px;cursor:pointer;border-bottom:1px dashed var(--line2)}
+  .checkitem:last-child{border-bottom:none}
+  .checkitem .box{width:19px;height:19px;border:1.5px solid #cbd5e1;border-radius:5px;flex-shrink:0;margin-top:1px;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;background:#fff}
+  .checkitem.on .box{background:var(--ok);border-color:var(--ok)}
+  .checkitem.on .lbl{color:var(--ink3);text-decoration:line-through}
+  .navfoot{display:flex;justify-content:space-between;align-items:center;margin:30px 0 12px;max-width:880px;border-top:1px solid var(--line);padding-top:18px}
+  .stepwords{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0}
+  .stepw{flex:1;min-width:180px;border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#fff}
+  .stepw .h{font-weight:700;font-size:13px;margin-bottom:3px}
+  .stepw .h .n{color:var(--brand)}
+  .stepw p{margin:4px 0 0;font-size:12.5px;color:var(--ink2)}
+  a.link{color:var(--brand);text-decoration:none;font-weight:600}
+  a.link:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><span class="dot"></span><div>产品设计方法<small>概念识别 + 时刻设计 · 交互教程</small></div></div>
+    <div class="navlabel">课程章节</div>
+    <div id="nav"></div>
+  </aside>
+  <header class="topbar">
+    <div class="crumb" id="crumb"></div>
+    <div class="spacer"></div>
+    <div class="progress-wrap"><span id="ptext"></span><div class="pbar"><i id="pbar"></i></div></div>
+    <button class="btn ghost sm" onclick="resetT()" title="清空进度重新学">↺ 重置进度</button>
+  </header>
+  <main class="main" id="main"></main>
+</div>
+
+<script>
+/* ============================================================
+   教程状态（单一可变对象）
+   ============================================================ */
+let T, QDEF;
+function freshT(){
+  T = { ch:0, quiz:{}, fields:{}, fieldsChecked:false,
+        cursor:{status:"处理中", level:0, log:[]},
+        form:"card", by:{notif:false,perm:false}, checks:{}, visited:{} };
+  QDEF = {};
+}
+
+/* 章节是否"通关"（每章一个核心检查点；其余交互是加分项） */
+function chDone(i){
+  switch(i){
+    case 0: return !!T.quiz["c0"]?.correct;
+    case 1: return !!T.quiz["c1"]?.correct;
+    case 2: return !!T.quiz["c2"]?.correct;
+    case 3: return !!T.quiz["c3"]?.correct;
+    case 4: return !!T.quiz["c4"]?.correct;
+    case 5: return T.by.notif && T.by.perm;
+    case 6: return Object.values(T.checks).filter(Boolean).length>=6;
+  }
+  return false;
+}
+function doneCount(){ let n=0; for(let i=0;i<CH.length;i++) if(chDone(i)) n++; return n; }
+
+/* ============================================================
+   通用交互组件
+   ============================================================ */
+function renderQuiz(qid, prompt, opts){
+  QDEF[qid]=opts;
+  const a=T.quiz[qid];
+  const lis=opts.map((o,idx)=>{
+    let cls="opt";
+    if(a){ if(idx===a.picked) cls+= o.correct?" correct":" wrong"; else if(o.correct) cls+=" faint"; }
+    return `<button class="${cls}" ${a?"disabled":""} onclick="pick('${qid}',${idx})">${o.text}</button>`;
+  }).join("");
+  let fb="";
+  if(a){ const o=opts[a.picked]; fb=`<div class="feedback ${o.correct?'good':'bad'}">${o.correct?'✓ 对了。':'✗ 再想想。'} ${o.why}</div>`; }
+  return `<div class="qz">${prompt}</div><div class="opts">${lis}</div>${fb}`;
+}
+function pick(qid,idx){ T.quiz[qid]={picked:idx, correct:!!QDEF[qid][idx].correct}; render(); }
+function ex(label, inner){ return `<div class="exercise"><div class="xlabel">🧪 试一试 · ${label}</div>${inner}</div>`; }
+function key(title, html){ return `<div class="key"><span class="kh">${title}</span>${html}</div>`; }
+
+/* ============================================================
+   章节定义
+   ============================================================ */
+const CH = [
+/* ---------- 0 · 开篇 ---------- */
+{ icon:"◎", title:"开篇 · 一个公式", crumb:"开篇 · 产品设计 = 名词 + 动词", render(){
+  return `<div class="wrap lesson">
+    <div class="eyebrow">第 0 章 · 心法</div>
+    <h1 class="t">产品设计 = 概念识别（名词）＋ 时刻设计（动词）</h1>
+    <div class="lead">多数架构师精于<b>概念识别</b>（系统里有什么），却缺了并列的另一道工序——<b>时刻设计</b>（用户此刻要做什么）。本教程带你把两半都走一遍，套到任意新内部系统上。</div>
+
+    <h2>两层 UI 预算：胜负在那 40%</h2>
+    <p><b>Tier-1 通用 CRUD</b>（≈60% 屏 / ≈10% 价值）：实体表、参考数据维护、只读查看——"概念→表→详情"的赌注完全正确，生成器造一次到处用。</p>
+    <p><b>Tier-2 时刻视图</b>（≈40% 屏 / ≈90% 价值）：分诊收件箱、工作台、whose-turn 审批…逐个手工打造。<b>战胜 Excel / Jira 的全部理由都在这 40%。</b></p>
+
+    ${ex("感受差距：同一个落地页，两种做法", (function(){
+      const widget = `<div class="card"><div class="row"><div class="grow"><div class="title">我的告警 · 12</div><div class="sub">点进去再说</div></div></div>
+        <div class="row"><div class="grow"><div class="title">我的待办 · 7</div><div class="sub">点进去再说</div></div></div>
+        <div class="row"><div class="grow"><div class="title">我的汇报 · 3</div><div class="sub">点进去再说</div></div></div>
+        <div class="row"><div class="grow"><div class="title">我的审批 · 5</div><div class="sub">点进去再说</div></div></div></div>
+        <div class="anno">❌ <b>widget 堆砌</b>：四个计数卡，没有一个"此刻就能按下去的主动作"。用户还得自己拼信息、自己决定先点哪个——这就是又一个 Jira。</div>`;
+      const moment = `<div class="card"><div class="row"><span class="sev high"></span><div class="grow"><div class="title">曝光剂量漂移 <span class="tag t-warn">可聚合 ×2</span></div><div class="sub">AL-2287 · Fab3-Litho · 只读证据</div></div><div class="actions"><button class="btn primary sm">升级为 Issue</button><button class="btn sm">Ack</button></div></div>
+        <div class="row"><span class="sev mid"></span><div class="grow"><div class="title">刻蚀腔体温度异常</div><div class="sub">AL-2290 · Fab2-Etch · 只读证据</div></div><div class="actions"><button class="btn primary sm">升级为 Issue</button><button class="btn sm">Ack</button></div></div></div>
+        <div class="anno">✅ <b>时刻视图</b>：每行一个主动作，视线落到蓝色按钮就完成"看清→动手"。系统替你算好了"该处理哪些"。</div>`;
+      const on=T.form;
+      return `<div class="tognav"><button class="${on==='card'?'':'on'}" onclick="T.form='table';render()">❌ widget 堆砌</button><button class="${on==='card'?'on':''}" onclick="T.form='card';render()">✅ 时刻视图</button></div>
+        ${on==='card'?moment:widget}`;
+    })())}
+
+    ${ex("理解检查", renderQuiz("c0",
+      "为什么说“纯 CRUD 覆盖不了一切”是这套方法要纠正的核心误区？",
+      [
+        {text:"因为 CRUD 表格不好看，卡片更现代", correct:false, why:"形态不是审美问题。表格对 Tier-1 是正确的，问题在用错地方。"},
+        {text:"因为决定生死的那 40% 是“此刻一键完成一个决定”，纯表格做不出来", correct:true, why:"表格优化的是“定位+比较”，时刻视图优化的是“决策+动作”。把时刻做成表格，主动作就淹没在列里。"},
+        {text:"因为 CRUD 没有数据库支持", correct:false, why:"与持久化无关。两层都落在同一套数据上，差别在认知任务。"},
+      ]))}
+
+    ${key("一句话收口", "<b>概念识别</b>让系统“装得下”业务（定对错）；<b>时刻设计</b>让系统“好用到不可替代”（定生死）。接下来 6 章，就是把这两半变成可照做的流水线。")}
+  </div>`;
+}},
+
+/* ---------- 1 · 概念识别 ---------- */
+{ icon:"1", title:"概念识别 · 建模", crumb:"概念识别 · 找引力中心、分字段、状态游标", render(){
+  // 字段二分
+  const FIELDS=[
+    {name:"站点 / 设备读数", ans:"fact", hint:"来自上游 MES/FDC，同步会覆盖"},
+    {name:"上游告警来源", ans:"fact", hint:"事实证据，不可改"},
+    {name:"HR 组织层级", ans:"fact", hint:"来自上游 HR，别在本系统维护人事"},
+    {name:"负责人指派", ans:"op", hint:"本系统按 site→owner 注册表解析"},
+    {name:"当前状态 / 审批意见", ans:"op", hint:"人推进工作流产生的运营层"},
+  ];
+  const fieldRows=FIELDS.map((f,idx)=>{
+    const cur=T.fields[idx]||null;
+    const checked=T.fieldsChecked;
+    let mark="";
+    if(checked && cur){ const right=cur===f.ans; mark=`<span class="mark ${right?'r':'w'}">${right?'✓':'✗'}</span>`; }
+    const pillCls = cur==="fact"?"pill fact":cur==="op"?"pill op":"pill";
+    const label = cur==="fact"?"事实字段":cur==="op"?"运营字段":"点击归类 →";
+    return `<div class="fieldrow">
+      <div class="grow"><b>${f.name}</b>${checked?`<div class="sub muted" style="font-size:12px">正解：${f.ans==='fact'?'事实（只读）':'运营（可写）'} —— ${f.hint}</div>`:""}</div>
+      ${mark}
+      <button class="${pillCls}" onclick="fieldToggle(${idx})">${label}</button>
+    </div>`;
+  }).join("");
+  const allSet=FIELDS.every((_,idx)=>T.fields[idx]);
+
+  // 游标
+  const c=T.cursor; const ladder=["三级经理","四级经理","五级经理"];
+  const chainHtml=ladder.map((r,i)=>{
+    const lv=i+1; const done = c.status==="已批准" || lv<c.level; const cur=c.status==="审批中"&&lv===c.level;
+    return `<span class="node ${done?'done':''} ${cur?'cur':''}">${r}${done?' ✓':cur?' …':''}</span>`;
+  }).join('<span class="arr">→</span>');
+  const statusTag = c.status==="处理中"?`<span class="tag t-info">处理中</span>`: c.status==="审批中"?`<span class="tag t-purple">审批中</span>`:`<span class="tag t-brand">已批准</span>`;
+
+  return `<div class="wrap lesson">
+    <div class="eyebrow">第 1 章 · 概念识别（名词那一半）</div>
+    <h1 class="t">先把领域模型建对：6 条易翻车的纪律</h1>
+    <div class="lead">这一半你多半已会。这里只练 3 个最常翻车的点：<b>找唯一引力中心</b>、<b>事实/运营字段二分</b>、<b>多级审批是游标不是状态</b>。</div>
+
+    ${ex("练习 A · 找引力中心", renderQuiz("c1",
+      "下面四个实体，谁该是系统的“引力中心”（配富工作台、承载工作流）？",
+      [
+        {text:"告警 Alarm —— 数据量最大、最先到达", correct:false, why:"告警是上游来的<b>只读证据</b>，只配只读展示。“详情多能动手”取决于“上面发生多少人的操作”，不是属性多少。"},
+        {text:"Issue —— 人每天驱动、有完整工作流的那个", correct:true, why:"人驱动的是 Issue：分诊→处理→审批→汇报全绕它转。引力中心 = 高频驱动实体。"},
+        {text:"会议 Meeting —— 它把所有事汇总到一起", correct:false, why:"会议是周期容器，是下游。把它当中心会让你给“汇总”配工作台，方向反了。"},
+        {text:"参考数据（站点负责人表）—— 它被所有人引用", correct:false, why:"被引用 ≠ 被驱动。它是 Tier-1 CRUD 的长尾，不是中心。"},
+      ]))}
+
+    ${ex("练习 B · 事实字段 vs 运营字段", `
+      <p style="margin:0 0 10px" class="muted">点每一行的按钮，把它归类到<b>事实字段</b>（上游只读，同步会覆盖）或<b>运营字段</b>（人可写、本系统拥有）。</p>
+      <div class="card" style="padding:4px 14px">${fieldRows}</div>
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+        <button class="btn primary sm" ${allSet?"":"disabled"} onclick="T.fieldsChecked=true;render()">检查答案</button>
+        ${T.fieldsChecked?`<span class="muted">正确 ${FIELDS.filter((f,idx)=>T.fields[idx]===f.ans).length}/${FIELDS.length}</span>`:`<span class="muted">${allSet?'都归类了，可以检查':'还有未归类的'}</span>`}
+      </div>`)}
+
+    ${ex("练习 C · 多级审批 = 1 状态 + 游标（不是多状态）", `
+      <p style="margin:0 0 10px" class="muted">点按钮推进审批。注意看：<b>状态枚举不变</b>，移动的只是 <code>current_level</code> 游标。</p>
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px">
+        <span>当前状态：${statusTag}</span>
+        <span class="muted">current_level = <b style="color:var(--brand)">${c.level}</b> / 3</span>
+        <span class="muted">用到的状态种类：<b>${c.log.length?new Set(["处理中",...c.log.map(x=>x)].concat(c.status)).size:1}</b> 个（始终很少）</span>
+      </div>
+      <div class="chain">${chainHtml}</div>
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn sm primary" ${c.status==="处理中"?"":"disabled"} onclick="cursorAct('submit')">提交审批</button>
+        <button class="btn sm ok" ${c.status==="审批中"?"":"disabled"} onclick="cursorAct('approve')">本级批准</button>
+        <button class="btn sm danger" ${c.status==="审批中"?"":"disabled"} onclick="cursorAct('reject')">打回</button>
+        <button class="btn sm ghost" onclick="cursorAct('reset')">复位</button>
+      </div>
+      <div class="anno">如果把四级/五级审批做成"四级审批中""五级审批中"…就是<b>状态爆炸</b>。阶段(phase)才配当状态，迭代(iteration)只配当数据。</div>`)}
+
+    ${key("本章判据", "① 引力中心唯一，且是“人每天动手最多”的实体。② 每个字段都进了“事实”或“运营”，没有第三类。③ 多级审批 = 1 个“审批中” + level 游标，状态总数 ≤ 6。")}
+  </div>`;
+}},
+
+/* ---------- 2 · 时刻设计 ---------- */
+{ icon:"2", title:"时刻设计 · 动词", crumb:"时刻设计 · 选主角色、走时刻链、收口去重", render(){
+  return `<div class="wrap lesson">
+    <div class="eyebrow">第 2 章 · 时刻设计（动词那一半 · 决定生死）</div>
+    <h1 class="t">角色 × 时刻 → ~7 个聚焦视图</h1>
+    <div class="lead">时刻设计不是"给每个角色画几个页面"，而是一条<b>有严格依赖顺序</b>的推导。每一步都砍掉一堆"看似合理实则有害"的设计。</div>
+
+    <h2>主角色的时刻链：入口 → 推进 → 卡点</h2>
+    <div class="stepwords">
+      <div class="stepw"><div class="h"><span class="n">入口</span> · 分诊新告警</div><p>"昨晚冲我来了啥？哪些升级、哪些忽略？" → 分诊收件箱，主按钮三选一。</p></div>
+      <div class="stepw"><div class="h"><span class="n">推进</span> · 处理我的 Issue</div><p>"我名下哪个该我现在动手？" → 工作台，按"需我动作"置顶，主动作随状态变单按钮。</p></div>
+      <div class="stepw"><div class="h"><span class="n">卡点</span> · 查来龙去脉</div><p>"怎么走到今天的？为啥被打回？" → 只读事件时间线，看清就好，动作回工作台。</p></div>
+    </div>
+
+    ${ex("练习 A · 选主角色", renderQuiz("c2",
+      "5 个角色（工程师 / 审批经理 / 汇报人 / 管理员 / 值班）。该先打穿谁的时刻链？",
+      [
+        {text:"5 个角色各做一个 dashboard，公平对称", correct:false, why:"这是“对称陷阱”。低频角色根本不来看，价值为零，还稀释主角色设计。"},
+        {text:"工程师 —— 它驱动引力中心 Issue，且高频", correct:true, why:"主角色必须对齐引力中心。先把工程师的入口→推进→卡点打穿,其余角色“派生”。"},
+        {text:"审批经理 —— 它官最大，决策权重高", correct:false, why:"它是<b>低频·被卷入</b>的角色,没有早间例程。给它造“入口”就是“低频当高频”。"},
+      ]))}
+
+    <h2>低频角色：不造入口，靠"通知 + whose-turn"派生</h2>
+    <p>审批经理 / 汇报人不是每天主动来的，他们被主角色的<b>状态变更卷入</b>。最佳形态是"一条通知 + 一个'轮到我'视图"。多级审批<b>不产生多视图</b>——四级/五级看到的是同一个"待我审批"，区别只是游标走到了谁。</p>
+
+    ${ex("练习 B · 认出反模式", renderQuiz("c2b",
+      "有人提议：“把'超时清单''待汇报清单'都建成独立的数据库表来管理。” 这是哪个反模式？",
+      [
+        {text:"视图升表 —— 它们是 f(实体+规则+事件) 算出的派生视图，没有独立生命周期", correct:true, why:"派生清单别硬做成概念表,用 derive() 实时算。一旦做成表就要维护一致性,纯属自找麻烦。"},
+        {text:"状态爆炸", correct:false, why:"状态爆炸是把多级审批做成多状态,与这里无关。"},
+        {text:"没问题,清单当然要落库", correct:false, why:"恰恰相反。凡“过滤+计算”得到、无独立生命周期的,都是视图不是概念。"},
+      ]))}
+
+    ${key("收口", "把所有时刻视图去重 → 自然收敛到 <b>~7 个 Tier-2 视图</b>（多角色共享同一视图）。剩下的长尾全部掉进 Tier-1 CRUD。本系统范例正好收敛到 7 个：分诊收件箱 / 工作台 / 事件时间线 / 待我审批 / 待汇报 / 会议议程 / 通知中心。")}
+  </div>`;
+}},
+
+/* ---------- 3 · 形态即契约 ---------- */
+{ icon:"3", title:"形态即契约", crumb:"形态即契约 · 卡片=动手,表格=查数", render(){
+  const sample=[
+    {t:"曝光剂量漂移", s:"ISS-1042 · Fab3-Litho · 李工", st:"审批中", sla:"剩 6h"},
+    {t:"刻蚀腔体温度异常", s:"ISS-1039 · Fab2-Etch · 王工", st:"处理中", sla:"已超时"},
+    {t:"炉管真空度偏低", s:"ISS-1031 · Fab3-Diff · 陈工", st:"已批准", sla:"—"},
+  ];
+  const cardView=`<div class="card">${sample.map(r=>`<div class="row"><div class="grow"><div class="title">${r.t} <span class="tag t-purple">${r.st}</span></div><div class="sub">${r.s}</div></div><div class="actions"><button class="btn primary sm">提交审批</button></div></div>`).join("")}</div>
+    <div class="anno">✅ <b>卡片 = 动手</b>：低密度,每行只有主动作上饱和蓝（视线磁铁）,标题左对齐方便下扫。视线落到按钮 = 完成决策。优化"决策+动作"。</div>`;
+  const tableView=`<div class="card" style="overflow:auto"><table class="tbl"><thead><tr><th>ID</th><th>标题</th><th>站点</th><th>负责人</th><th>状态</th><th>时效</th></tr></thead><tbody>
+    ${sample.map(r=>{const p=r.s.split(' · ');return `<tr><td class="mono">${p[0]}</td><td>${r.t}</td><td>${p[1]}</td><td>${p[2]}</td><td><span class="tag t-gray">${r.st}</span></td><td>${r.sla}</td></tr>`;}).join("")}
+    </tbody></table></div>
+    <div class="anno">✅ <b>表格 = 查数</b>：高密度多列,行内<b>故意不放饱和色按钮</b>(否则前注意的"跳"触发几十次,搅烂比较)。数字右对齐便于比大小。优化"定位+比较",动作延后到抽屉。</div>`;
+
+  return `<div class="wrap lesson">
+    <div class="eyebrow">第 3 章 · 形态即层级契约</div>
+    <h1 class="t">用户没读字,就该从样子知道"我在哪层、该干嘛"</h1>
+    <div class="lead">两层不只"做什么"不同,<b>长什么样</b>也固定成两套视觉语言。形态本身是契约——它在控制用户的<b>视线路径</b>,而视线路径决定任务效率。</div>
+
+    ${ex("练习 A · 同一份数据,两种形态(切换看视线差异)", `
+      <div class="tognav"><button class="${T.form==='card'?'on':''}" onclick="T.form='card';render()">卡片(Tier-2 时刻视图)</button><button class="${T.form==='table'?'on':''}" onclick="T.form='table';render()">表格(Tier-1 实体表)</button></div>
+      ${T.form==='card'?cardView:tableView}`)}
+
+    ${ex("练习 B · 判层 → 定形态", renderQuiz("c3",
+      "“审批经理早上要在 5 条待批里逐条决定批或驳”——这屏该用什么形态？",
+      [
+        {text:"密集表格,把 5 条排成多列方便对比", correct:false, why:"这是“推进/动手”时刻,不是“比较”。做成表格,批/驳主动作就淹没在列里,还得点进去才能动手。"},
+        {text:"卡片/行列表,每行一个“批准/打回”主按钮,按 whose-turn 置顶", correct:true, why:"动手任务 → 卡片。把“轮到我的”排到视线落点,排序替用户把扫描做完了——这是优化天花板。"},
+        {text:"无所谓,内容少随便", correct:false, why:"形态不由内容量决定,由“它属哪一层/是什么认知任务”决定。"},
+      ]))}
+
+    ${key("视线杠杆", "颜色饱和(只给主动作上色当磁铁)、位置(动作放右端=行的终点)、对齐(标题左对齐/数字右对齐)、<b>排序筛选(最强:把答案排到眼睛落点)</b>、密度(低=注视/高=扫描)。选卡片还是表格,本质是在选“优化哪种眼动”。")}
+  </div>`;
+}},
+
+/* ---------- 4 · 抽屉 vs 详情页 ---------- */
+{ icon:"4", title:"抽屉 vs 详情页", crumb:"抽屉 vs 详情页 · 由任务决定,不由内容量", render(){
+  return `<div class="wrap lesson">
+    <div class="eyebrow">第 4 章 · 详情载体</div>
+    <h1 class="t">抽屉 还是 整页详情页?由"用户此刻在干嘛"决定</h1>
+    <div class="lead">最常见的实操疑问:实体字段特别多,抽屉装得下吗?<b>易犯的错是用"内容量"做判据</b>。正确判据永远是任务。</div>
+
+    <div class="grid2" style="margin:14px 0">
+      <div class="card" style="padding:14px 16px"><div class="title" style="margin-bottom:6px">抽屉 <span class="tag t-info">Tier-2 时刻配件</span></div>
+        <p class="muted" style="margin:0;font-size:13px">服务<b>推进</b>:在我的清单里顺手处理这一条。核心价值=<b>不离开上下文</b>,ESC 即回队列接着下一条。内容按分页签裁剪。</p></div>
+      <div class="card" style="padding:14px 16px"><div class="title" style="margin-bottom:6px">整页详情页 <span class="tag t-gray">Tier-1 规范记录</span></div>
+        <p class="muted" style="margin:0;font-size:13px">服务<b>研究/追溯/分享/打印</b>。核心价值=<b>独立地址</b>,可收藏/分享/打印/并排比对。全字段全展开。</p></div>
+    </div>
+
+    ${ex("练习 · 给任务选载体(注意第 1 题的陷阱)", `
+      ${renderQuiz("c4","① 字段<b>特别多</b>(描述/批次/参数/告警/附件/讨论…几十个),该上整页吗?",
+        [
+          {text:"上整页 —— 字段多抽屉装不下", correct:false, why:"陷阱!内容多<b>先用渐进披露(分页签+段内分区)</b>解决,而不是换载体。抽屉纵向空间很大,几十个字段也扛得住。"},
+          {text:"还是抽屉 —— 先分页签折叠,只有任务变了才换载体", correct:true, why:"对。真正逼出整页的不是字段数,是任务变了(深链/打印/并排/超重内容)。"},
+        ])}
+      <div style="height:14px"></div>
+      ${renderQuiz("c4b","② 要把这条 Issue <b>对外分享给客户、并打印归档</b>,用哪个?",
+        [
+          {text:"整页详情页 —— 要独立地址(可收藏/分享/打印)", correct:true, why:"对。任务从“推进”变成了“对外引用”,抽屉结构性扛不住,升级整页。这就是 Tier-1 的“表→详情”。"},
+          {text:"抽屉 —— 反正内容一样", correct:false, why:"抽屉没有独立 URL,无法分享/收藏/打印。任务变了,载体就该变。"},
+        ])}`)}
+
+    ${key("一份内容,两种载体,别写两套", "用<b>同一组区块渲染器</b>:抽屉调它(裁剪+分页签)、详情页也调它(全量展开),区别只在布局壳。否则字段一改两处漂移。本仓库 <span class='mono'>原型.html</span> 已落这条。")}
+  </div>`;
+}},
+
+/* ---------- 5 · 副产物 ---------- */
+{ icon:"5", title:"副产物 · 通知+权限", crumb:"副产物 · 从网格列读出,不单独立项", render(){
+  const grid=[
+    {role:"工程师", moment:"推进·处理 Issue", action:"提交审批/标记解决", notif:"Issue 被打回/即将超时", perm:"自己名下 Issue 运营字段"},
+    {role:"审批经理", moment:"轮到我审批", action:"批准/打回", notif:"有 Issue 待你审批", perm:"current_level 命中时 approve/reject"},
+    {role:"汇报人", moment:"会前·准备上会", action:"确认上会/重排", notif:"会议 T-1 提醒", perm:"Report 状态/排期"},
+  ];
+  const hotN=T.by.notif, hotP=T.by.perm;
+  const gridTbl=`<div class="card" style="overflow:auto"><table class="tbl"><thead><tr>
+    <th>角色</th><th>时刻</th><th>主动作(一键)</th><th class="${hotN?'hot':''}">通知触发</th><th class="${hotP?'hot':''}">隐含写权限</th>
+    </tr></thead><tbody>${grid.map(g=>`<tr><td><b>${g.role}</b></td><td>${g.moment}</td><td>${g.action}</td><td class="${hotN?'hot':''}">${g.notif}</td><td class="${hotP?'hot':''}">${g.perm}</td></tr>`).join("")}</tbody></table></div>`;
+
+  const notifTbl = hotN? `<div style="margin-top:14px"><div class="xlabel" style="color:var(--warn)">📨 通知通道(读出后)</div><div class="card" style="overflow:auto"><table class="tbl"><thead><tr><th>触发</th><th>通知谁</th><th>落到哪个视图</th><th>通道</th></tr></thead><tbody>
+    <tr><td>Issue 提交审批</td><td>审批经理</td><td>待我审批</td><td>站内 + <b>外部 push</b></td></tr>
+    <tr><td>审批被打回</td><td>工程师</td><td>工作台(置顶)</td><td>站内 + 实时 push</td></tr>
+    <tr><td>会议 T-1</td><td>汇报人</td><td>待汇报清单</td><td>外部 push</td></tr>
+    </tbody></table></div><div class="anno">原则:高频角色站内+digest即可;<b>低频/卷入式角色(审批/汇报/值守)必须外部触达</b>,否则他们不会回来。</div></div>`:"";
+  const permTbl = hotP? `<div style="margin-top:14px"><div class="xlabel" style="color:var(--warn)">🔒 权限矩阵(读出后)</div><div class="card" style="overflow:auto"><table class="tbl"><thead><tr><th>角色</th><th>能进的视图</th><th>能按的写动作</th></tr></thead><tbody>
+    <tr><td>工程师</td><td>分诊/工作台(仅自己名下)/通知中心</td><td>建 Issue、推进自己的 Issue</td></tr>
+    <tr><td>审批经理</td><td>待我审批(仅 current_level 命中)</td><td>approve/reject</td></tr>
+    <tr><td>汇报人</td><td>待汇报/会议议程</td><td>Report 排期/结论</td></tr>
+    </tbody></table></div><div class="anno">每个时刻视图<b>只暴露该时刻需要的那一个写动作</b>——这天然就是最小权限。事实字段全局只读。<b>不需要独立的 RBAC 设计。</b></div></div>`:"";
+
+  return `<div class="wrap lesson">
+    <div class="eyebrow">第 5 章 · 两个副产物</div>
+    <h1 class="t">通知 与 权限,从网格里"读出来",不单独立项</h1>
+    <div class="lead">很多团队一上来就立"通知系统"和"RBAC 权限"两个大项。这套方法里,它们只是角色×时刻网格里两列的<b>直接投影</b>——设计完时刻,它们已经浮现了。</div>
+
+    ${ex("点按钮,从同一张网格里读出两个副产物", `
+      ${gridTbl}
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn sm ${hotN?'':'primary'}" onclick="T.by.notif=true;render()">${hotN?'✓ 已读出通知通道':'读出"通知通道"列 →'}</button>
+        <button class="btn sm ${hotP?'':'primary'}" onclick="T.by.perm=true;render()">${hotP?'✓ 已读出权限矩阵':'读出"写权限"列 →'}</button>
+      </div>
+      ${notifTbl}${permTbl}
+      ${(hotN&&hotP)?'<div class="feedback good" style="margin-top:14px">✓ 看到没?两张"系统级设计"其实是网格两列的投影。<b>通知通道</b>=所有"把人卷回来"的触发点集合;<b>权限</b>=每个视图暴露的那一个写动作。都不必单独立项。</div>':''}`)}
+
+    ${key("本章判据", "① 通知表每一行都能在网格里找到对应的“卷回来”触发点。② 没有写一行独立 RBAC——权限完全是“视图 × 动作”的副产物。<b>(本章在你读出两列后通关)</b>")}
+  </div>`;
+}},
+
+/* ---------- 6 · 上手 ---------- */
+{ icon:"6", title:"上手 · 落地原型", crumb:"上手 · 单文件原型 + 自检清单", render(){
+  T.visited[6]=true;
+  const CHECKS=[
+    "引力中心唯一,且是高频驱动实体",
+    "字段二分(事实/运营)干净;状态 ≤6 且多级用游标",
+    "主角色对齐引力中心,时刻链是一段叙事而非页面清单",
+    "每个时刻一视图、主动作一键、其余隐藏;无对称 dashboard、无 widget 堆砌",
+    "收口到 ~7 个 Tier-2 视图,长尾交 Tier-1",
+    "每个新屏先判层再定形态;Tier-2 只有主动作上饱和色",
+    "详情默认抽屉+分页签,整页只为“深链/打印/并排/超重”;共用区块渲染器",
+    "通知/权限从网格列读出,未单独立项",
+    "单文件原型整条链点得通、跨视图联动、派生用 derive() 算",
+  ];
+  const checkHtml=CHECKS.map((c,idx)=>`<div class="checkitem ${T.checks[idx]?'on':''}" onclick="toggleCheck(${idx})"><div class="box">${T.checks[idx]?'✓':''}</div><div class="lbl">${c}</div></div>`).join("");
+  const n=Object.values(T.checks).filter(Boolean).length;
+
+  return `<div class="wrap lesson">
+    <div class="eyebrow">第 6 章 · 落地</div>
+    <h1 class="t">用一个文件把它点活,然后照单自检</h1>
+    <div class="lead">原型目标不是真系统,是<b>可交互验证三件事</b>:时刻链点得通、主动作一键可达、通知/权限作为副产物自动浮现。单文件、零依赖、刷新即重置。</div>
+
+    <h2>单文件骨架</h2>
+    <div class="card" style="padding:14px 16px"><pre class="mono" style="margin:0;white-space:pre-wrap;font-size:12.5px;line-height:1.7">原型.html(零依赖,双击即开)
+├─ &lt;style&gt;  设计系统:两套形态的视觉语言(卡片 vs 表格)
+├─ &lt;body&gt;   三栏骨架:侧栏(角色+导航)/顶栏(通知铃)/主区
+└─ &lt;script&gt;
+     store    单一可变状态(内存 mock)
+     derive   派生函数 f(实体+规则+事件) ← 超时/待办都在这算,不入库
+     RULES    硬编码 SLA / 审批阶梯 / 注册表
+     VIEWS[]  每个 Tier-2 视图一个渲染函数 + 一张代表性 Tier-1 表
+     router   角色 × 视图路由</pre></div>
+    <p style="margin-top:14px">本仓库已有一份完整范例:<a class="link" href="原型.html" target="_blank">▶ 打开 原型.html(半导体运营 · 时刻原型)</a>,以及配套文档 <span class="mono">产品设计方法.md / 领域模型.md / 时刻设计.md / 新产品实操教程.md</span>。</p>
+
+    ${ex(`完工自检清单(勾 6 项以上即通关本章 · 已勾 ${n}/${CHECKS.length})`, `<div class="card" style="padding:4px 14px">${checkHtml}</div>`)}
+
+    ${key("一句话收口", "<b>概念识别让系统“装得下”业务(定对错);时刻设计让系统“好用到不可替代”(定生死)。</b> 下一个新产品,照这 6 章的流水线走一遍即可——附录里的招聘 ATS 范例证明:换了域,实体名全变、结构和纪律一字不改。")}
+
+    ${doneCount()>=6?`<div class="feedback good" style="margin-top:18px;font-size:14px">🎉 教程通关!你已经走完"概念识别 + 时刻设计"的完整流水线。去 <span class="mono">新产品实操教程.md</span> 拿空白模板,套到你的下一个系统上。</div>`:''}
+  </div>`;
+}},
+];
+
+/* ============================================================
+   交互处理器
+   ============================================================ */
+function fieldToggle(idx){ const cur=T.fields[idx]; T.fields[idx]= cur==="fact"?"op": "fact"; render(); }
+function cursorAct(a){
+  const c=T.cursor;
+  if(a==="submit" && c.status==="处理中"){ c.status="审批中"; c.level=1; c.log.push("审批中"); }
+  else if(a==="approve" && c.status==="审批中"){ if(c.level<3){ c.level++; } else { c.status="已批准"; c.log.push("已批准"); } }
+  else if(a==="reject" && c.status==="审批中"){ c.status="处理中"; c.level=0; }
+  else if(a==="reset"){ T.cursor={status:"处理中",level:0,log:[]}; }
+  render();
+}
+function toggleCheck(idx){ T.checks[idx]=!T.checks[idx]; render(); }
+function goCh(i){ T.ch=i; render(); document.getElementById("main").scrollTop=0; }
+function resetT(){ freshT(); render(); }
+
+/* ============================================================
+   骨架渲染
+   ============================================================ */
+function render(){
+  // 侧栏
+  let nav="";
+  CH.forEach((c,i)=>{
+    const done=chDone(i);
+    nav+=`<div class="navitem ${T.ch===i?'active':''} ${done?'done':''}" onclick="goCh(${i})">
+      <span class="num">${done?'✓':c.icon}</span><span class="nt">${c.title}</span></div>`;
+  });
+  document.getElementById("nav").innerHTML=nav;
+  // 顶栏
+  document.getElementById("crumb").textContent=CH[T.ch].crumb;
+  const dc=doneCount();
+  document.getElementById("ptext").textContent=`进度 ${dc}/${CH.length}`;
+  document.getElementById("pbar").style.width=(dc/CH.length*100)+"%";
+  // 主区
+  const foot=`<div class="navfoot">
+    <button class="btn" ${T.ch===0?'disabled':''} onclick="goCh(${T.ch-1})">← 上一章</button>
+    <span class="muted">${T.ch+1} / ${CH.length} · ${CH[T.ch].title}</span>
+    <button class="btn primary" ${T.ch===CH.length-1?'disabled':''} onclick="goCh(${T.ch+1})">下一章 →</button>
+  </div>`;
+  document.getElementById("main").innerHTML=CH[T.ch].render()+foot;
+}
+
+/* boot */
+freshT(); render();
+</script>
+</body>
+</html>

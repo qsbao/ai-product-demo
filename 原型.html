@@ -178,7 +178,26 @@ const RULES = {
   // 审批阶梯（引用数据，管理员可改）：从直接主管逐级向上
   approvalLadder: ["三级经理","四级经理","五级经理"],
   // site → 站点负责人 注册表（本系统自有引用数据，管理员可改）
-  siteOwners: { "Fab2-CMP":"李工", "Fab2-Etch":"王工", "Fab3-Litho":"赵工", "Fab3-Diff":"陈工" }
+  siteOwners: { "Fab2-CMP":"李工", "Fab2-Etch":"王工", "Fab3-Litho":"赵工", "Fab3-Diff":"陈工" },
+  // 决策 #9 · 因子层硬编码规则（先粗后细，对齐决策 #3 不做配置 UI）
+  // Kanban 自动判定：受影响批次中任一 lot.priority==0（hot lot）→ Kanban
+  isKanbanAuto: (iss)=> (iss.affectedLots||[]).some(l=>l.priority===0),
+  // Risk 自动判定：按 params 越限数粗映射（高 ≥2 越限；中 1；其余 低）
+  riskAuto: (iss)=>{
+    const off = (iss.params||[]).filter(p=> p.status && p.status!=="正常").length;
+    if(off>=2) return "高";
+    if(off>=1) return "中";
+    return "低";
+  },
+  // 必须上会（派生层，不可独立覆盖）= Kanban ∧ (∃lot subType∈{A,AA,AE}) ∧ (chart=KIP ∨ (chart=ACP ∧ risk∈{中,高}))
+  mustGoToMeeting: (iss)=>{
+    if(!iss.kanban) return false;
+    const subOK = (iss.affectedLots||[]).some(l=>["A","AA","AE"].includes(l.subType));
+    if(!subOK) return false;
+    if(iss.chartLevel==="KIP") return true;
+    if(iss.chartLevel==="ACP" && ["中","高"].includes(iss.risk)) return true;
+    return false;
+  }
 };
 // 模拟"现在"：以一个固定基准 + 自创建以来的相对小时推进。原型用 NOW_BASE 充当当前时刻。
 let CLOCK = 0; // 小时偏移，可在接入健康里"快进时间"演示超时
@@ -223,7 +242,8 @@ function seed(){
     mkIssue("Fab3-Litho","曝光剂量持续漂移影响良率", -30, "审批中", 1, {
       desc:"Fab3 Litho 区 ASML-07 曝光机，自上周保养后曝光剂量(Dose)持续正向漂移，CDU 跌出工艺窗口，已波及 3 个批次、良率影响约 1.8%（超 1.5% 阈值需上会）。",
       rootCause:"初判保养后能量传感器标定偏移，叠加光源老化；待 FDC 量测对比确认。",
-      affectedLots:[{lot:"L3-2218",wafers:25,stage:"曝光后量测"},{lot:"L3-2221",wafers:25,stage:"显影"},{lot:"L3-2225",wafers:13,stage:"涂胶"}],
+      chartLevel:"ACP",
+      affectedLots:[{lot:"L3-2218",wafers:25,stage:"曝光后量测",priority:0,subType:"AA"},{lot:"L3-2221",wafers:25,stage:"显影",priority:2,subType:"B"},{lot:"L3-2225",wafers:13,stage:"涂胶",priority:3,subType:"B"}],
       relatedAlarms:[{id:"AL-2287",type:"曝光剂量漂移",time:"今日 06:12"},{id:"AL-2279",type:"CDU 越限",time:"昨日 22:40"}],
       params:[{name:"曝光剂量 Dose",value:"31.4 mJ/cm²",spec:"30.0 ± 0.5",status:"越上限"},{name:"CDU (3σ)",value:"4.8 nm",spec:"≤ 4.0",status:"越上限"},{name:"对焦偏移 Focus",value:"-3 nm",spec:"± 10",status:"正常"}],
       attachments:[{name:"FDC_trend_ASML07.csv",size:"212 KB"},{name:"CDU_map_L3-2218.png",size:"1.1 MB"}],
@@ -231,6 +251,7 @@ function seed(){
     }),
     mkIssue("Fab2-Etch","刻蚀腔体温度异常待复核", -10, "处理中", 0, {
       desc:"Fab2 Etch 区 LAM-03 刻蚀腔体温度读数较基线偏高约 4℃，待复核是传感器漂移还是实际工艺异常。",
+      chartLevel:"KIP",
       params:[{name:"腔体温度",value:"68.2 ℃",spec:"64 ± 2",status:"越上限"}],
     }),
   ];
@@ -244,8 +265,20 @@ function mkIssue(site,title,hAgo,status,level,extra){
   const iss = { id, title, site, owner, status, currentLevel:level||0, approvalChain:chain,
     createdAt:hAgo, sourceAlarmId:null, events:[], reportIds:[], pinned:false,
     desc:"", rootCause:"", affectedLots:[], relatedAlarms:[], params:[], attachments:[], comments:[],
+    // 决策 #9 因子层：Kanban、Risk 可覆盖；chartLevel 是上游事实（只读）
+    kanban:false, kanbanAuto:false, kanbanOverride:null,
+    risk:"低", riskAuto:"低", riskOverride:null,
+    chartLevel:"",
     ...(extra||{}) };
-  ev(iss,"创建","系统",`由告警升级创建，按注册表分派给 ${owner}，已快照审批链`,true);
+  // 自动判 Kanban（lot.priority 规则）；若 extra 未显式覆盖，则采用自动值
+  const kAuto = RULES.isKanbanAuto(iss);
+  iss.kanbanAuto = kAuto;
+  if(iss.kanbanOverride==null) iss.kanban = kAuto;
+  // 自动判 Risk（params 越限数）；若 extra 未显式覆盖，则采用自动值
+  const rAuto = RULES.riskAuto(iss);
+  iss.riskAuto = rAuto;
+  if(iss.riskOverride==null) iss.risk = rAuto;
+  ev(iss,"创建","系统",`由告警升级创建，分派给 ${owner}；自动判定 Kanban=${kAuto?'✓':'✗'} · 风险=${rAuto} · 必须上会=${RULES.mustGoToMeeting(iss)?'✓':'✗'}`,true);
   if(status==="审批中"){ ev(iss,"提交审批",owner,`提交至 ${chain[0].role}`,true); }
   return iss;
 }
@@ -378,20 +411,27 @@ function ackAlarm(id){ const a=store.alarms.find(x=>x.id===id); a.status="已ack
 function ignoreAlarm(id){ const a=store.alarms.find(x=>x.id===id); a.status="已忽略"; toast("已标记忽略"); render(); }
 
 /* ---- 2. Issue 工作台（工程师·推进） + 事件时间线抽屉 ---- */
-let wbTab="全部";
+let wbTab="全部", wbIncludeClosed=false;
 VIEWS["Issue 工作台"] = ()=>{
-  let list = derive.myIssues();
+  let base = wbIncludeClosed ? store.issues : derive.myIssues();
+  let list = base;
   if(wbTab==="超时") list=derive.overdue();
   if(wbTab==="已升级") list=derive.escalated();
+  if(wbTab==="必须上会") list=base.filter(i=>mustMeet(i));
+  if(wbTab==="Kanban") list=base.filter(i=>i.kanban);
   // 排序：置顶 > 超时 > 其它
   list=[...list].sort((x,y)=> (y.pinned-x.pinned) || (isOverdue(y)-isOverdue(x)));
-  const tab=(t)=>`<button class="tab ${wbTab===t?'active':''}" onclick="wbTab='${t}';render()">${t}${t==='超时'?` (${derive.overdue().length})`:t==='已升级'?` (${derive.escalated().length})`:''}</button>`;
+  const mCount = derive.myIssues().filter(i=>mustMeet(i)).length;
+  const kCount = derive.myIssues().filter(i=>i.kanban).length;
+  const tab=(t)=>`<button class="tab ${wbTab===t?'active':''}" onclick="wbTab='${t}';render()">${t}${t==='超时'?` (${derive.overdue().length})`:t==='已升级'?` (${derive.escalated().length})`:t==='必须上会'?` (${mCount})`:t==='Kanban'?` (${kCount})`:''}</button>`;
   const rows=list.map(i=>{
     const od=isOverdue(i); const hl=hoursLeft(i);
+    // 行内门禁徽：必须上会优先（派生 gate）；否则回退到 Kanban tag（重要度因子的覆盖可见性）
+    const gateBadge = mustMeet(i) ? mustMeetTag(i) : kanbanTag(i);
     return `<div class="row ${i.pinned?'pinned':''} clickable" onclick="openIssue('${i.id}')">
       <div class="grow">
-        <div class="title">${i.pinned?'📌 ':''}${i.title} ${statusTag(i.status)} ${od?`<span class="tag t-danger">已超时</span>`:(hl<=8&&["处理中","审批中"].includes(i.status)?`<span class="tag t-warn">剩 ${hl}h</span>`:"")}</div>
-        <div class="sub">${i.id} · ${i.site} · 负责人 ${i.owner}${i.status==="审批中"?` · 审批至 ${i.approvalChain[i.currentLevel-1]?.role||""}`:""}</div>
+        <div class="title">${i.pinned?'📌 ':''}${i.title} ${gateBadge} ${statusTag(i.status)} ${od?`<span class="tag t-danger">已超时</span>`:(hl<=8&&["处理中","审批中"].includes(i.status)?`<span class="tag t-warn">剩 ${hl}h</span>`:"")}</div>
+        <div class="sub">${i.id} · ${i.site} · 负责人 ${i.owner}${i.status==="审批中"?` · 审批至 ${i.approvalChain[i.currentLevel-1]?.role||""}`:""}${reportHintSub(i)}</div>
       </div>
       <div class="actions" onclick="event.stopPropagation()">${primaryAction(i)}
         <button class="btn ghost sm" onclick="openIssue('${i.id}')">详情</button>
@@ -399,15 +439,74 @@ VIEWS["Issue 工作台"] = ()=>{
   }).join("");
   return `
     <div class="pagehead"><h1>Issue 工作台</h1><p>我名下的 Issue，按「需我动作 / 即将超时」自动置顶。每条只暴露当前状态下的<b>那一个</b>主动作。</p></div>
-    <div class="toolbar"><div class="tabs">${tab("全部")}${tab("超时")}${tab("已升级")}</div></div>
+    <div class="hint"><b>必须上会</b>（紫标 · 派生 = Kanban ∧ 子批∈{A,AA,AE} ∧ (主控图=KIP ∨ ACP+风险≥中)）须走汇报上会才能关闭；<b>非必须上会</b>在「已解决」时主动作变为 <b>关闭</b>，上会可选。在详情抽屉「概览」可改 Kanban / Risk 因子（必填理由）；子批与主控图是上游事实，只读。</div>
+    <div class="toolbar"><div class="tabs">${tab("全部")}${tab("必须上会")}${tab("Kanban")}${tab("超时")}${tab("已升级")}</div>
+      <label class="muted" style="font-size:12.5px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:8px"><input type="checkbox" ${wbIncludeClosed?'checked':''} onchange="wbIncludeClosed=this.checked;wbTab='全部';render()"> 含已关闭</label></div>
     <div class="card">${list.length? rows : `<div class="empty">该分类下暂无 Issue</div>`}</div>`;
 };
 function statusTag(s){ const m={"处理中":"t-info","审批中":"t-purple","已批准":"t-brand","已解决":"t-ok","已关闭":"t-gray"}; return `<span class="tag ${m[s]||'t-gray'}">${s}</span>`; }
+/* 决策 #9 派生层：必须上会 = f(Kanban, risk, subType, chartLevel)。无独立状态，无独立 override。 */
+function mustMeet(i){ return RULES.mustGoToMeeting(i); }
+function mustMeetWhy(i){
+  const subLot = (i.affectedLots||[]).find(l=>["A","AA","AE"].includes(l.subType));
+  const kPart = `Kanban ${i.kanban?'✓':'✗'}`;
+  const sPart = subLot ? `子批 ${subLot.subType} ✓` : `子批∈{A,AA,AE} ✗`;
+  const cPart = i.chartLevel==="KIP" ? "主控图 KIP ✓"
+              : i.chartLevel==="ACP" ? `主控图 ACP+风险${i.risk} ${["中","高"].includes(i.risk)?'✓':'✗'}`
+              : `主控图 ${i.chartLevel||'—'} ✗`;
+  return `${kPart} · ${sPart} · ${cPart}`;
+}
+function mustMeetTag(i){
+  if(mustMeet(i)) return `<span class="tag t-purple" title="${mustMeetWhy(i)}">必须上会</span>`;
+  return "";
+}
+function riskTag(i){
+  const manual = i.riskOverride && i.riskOverride.value===i.risk;
+  const cls = i.risk==="高"?"t-danger":i.risk==="中"?"t-warn":"t-gray";
+  const tip = manual ? `${i.riskOverride.by} 改：${i.riskOverride.reason}` : '自动 · params 越限数';
+  return `<span class="tag ${cls}" title="${tip}">风险:${i.risk}${manual?' · 人工':''}</span>`;
+}
+function kanbanTag(i){
+  const manual = i.kanbanOverride && i.kanbanOverride.value===i.kanban;
+  if(i.kanban){
+    const tip = manual ? `人工标为 Kanban（${i.kanbanOverride.by}）：${i.kanbanOverride.reason}` : '按 lot.priority==0 自动判定';
+    return `<span class="tag t-purple" title="${tip}">Kanban${manual?' · 人工':''}</span>`;
+  }
+  // 非 Kanban：仅当"自动判 Kanban 但被人工取消"时给灰标，保留可见性；自动非 Kanban 的常态不装饰
+  if(i.kanbanAuto && manual){
+    const tip = `自动规则判 Kanban，被 ${i.kanbanOverride.by} 取消：${i.kanbanOverride.reason}`;
+    return `<span class="tag t-gray" title="${tip}">Kanban 已取消 · 人工</span>`;
+  }
+  return '';
+}
+/* 活跃汇报：取 reportIds 中最新一条「待汇报」Report（含未排期和已排期），用于行内/抽屉反映进度 */
+function activeReportOf(i){
+  return [...i.reportIds].reverse().map(reportById).find(r=>r && r.status==="待汇报");
+}
+function reportBadgeInline(r){
+  if(!r) return "";
+  if(r.meetingId){ const m=meetingById(r.meetingId);
+    return `<span class="tag t-info" title="${r.id} · ${m?m.date:''}">排：${m?m.title:r.meetingId}</span>`;
+  }
+  return `<span class="tag t-gray" title="${r.id} · 已发起，等汇报人选会">等汇报人排期</span>`;
+}
+function reportHintSub(i){
+  // 非必须上会主动作仍是「关闭」，已发起汇报时在 sub 里挂个小字提示，避免重复点
+  if(i.status!=="已解决" || mustMeet(i)) return "";
+  const r=activeReportOf(i); if(!r) return "";
+  return r.meetingId
+    ? ` · 已发起汇报 ${r.id} · 排：${meetingById(r.meetingId)?.title||""}`
+    : ` · 已发起汇报 ${r.id} · 等汇报人排期`;
+}
 function primaryAction(i){
   if(i.status==="处理中") return `<button class="btn primary sm" onclick="submitApproval('${i.id}')">提交审批</button>`;
   if(i.status==="审批中") return `<span class="tag t-purple">等待 ${i.approvalChain[i.currentLevel-1]?.role||""} 审批</span>`;
   if(i.status==="已批准") return `<button class="btn ok sm" onclick="resolveIssue('${i.id}')">标记解决</button>`;
-  if(i.status==="已解决") return `<button class="btn sm" onclick="createReport('${i.id}')">发起汇报</button>`;
+  if(i.status==="已解决"){
+    const r=activeReportOf(i);
+    if(mustMeet(i)) return r ? reportBadgeInline(r) : `<button class="btn sm" onclick="createReport('${i.id}')">发起汇报</button>`;
+    return `<button class="btn ok sm" onclick="closeIssue('${i.id}')">关闭</button>`;
+  }
   return "";
 }
 function submitApproval(id){ const i=issueById(id); i.status="审批中"; i.currentLevel=1; i.pinned=false;
@@ -415,14 +514,61 @@ function submitApproval(id){ const i=issueById(id); i.status="审批中"; i.curr
   pushNotif("审批经理",id,`Issue ${id}「${i.title}」待你审批`,"待我审批");
   toast("已提交审批 → 审批经理「待我审批」+1"); render();
 }
-function resolveIssue(id){ const i=issueById(id); i.status="已解决"; i.pinned=false; ev(i,"标记解决","你","工程师确认问题已解决",true); toast("已标记解决 → 可发起汇报"); render(); }
+function resolveIssue(id){
+  const i=issueById(id); i.status="已解决"; i.pinned=false;
+  ev(i,"标记解决","你","工程师确认问题已解决",true);
+  toast(mustMeet(i)? "已标记解决 → 必须上会，须发起汇报" : "已标记解决 → 非必须上会，可一键关闭");
+  render();
+}
+function closeIssue(id){
+  const i=issueById(id);
+  if(mustMeet(i)){ toast("必须上会 · 须走汇报上会才能关闭"); return; }
+  i.status="已关闭"; i.pinned=false;
+  ev(i,"直接关闭","你","非必须上会：工程师确认结案，未上会",true);
+  toast("已关闭 → 在工作台「含已关闭」开关里可回看");
+  render();
+}
 
 /* ---- Issue 详情：抽屉(裁剪+分页签) 与 整页(全量) 共用同一组区块渲染器 ----
    关键纪律：一份内容、两种载体。区块渲染器是唯一真相；抽屉裁剪+分页签服务"推进"，
    整页全量展开服务"研究/追溯/分享/打印"。改字段只改这里，两处不漂移。 */
 function secMeta(i){
+  const canToggle = (store.role==="工程师" || store.role==="审批经理") && i.status!=="已关闭";
+  // 层 A · 因子 Kanban（可覆盖）
+  const kManual = i.kanbanOverride && i.kanbanOverride.value===i.kanban;
+  const kSrc = kManual
+    ? `人工覆盖（${i.kanbanOverride.by} · ${i.kanbanOverride.at}：${i.kanbanOverride.reason}）`
+    : "自动 · lot.priority==0 规则";
+  const kBtn = canToggle
+    ? `<button class="btn sm" style="margin-left:8px" onclick="toggleKanbanPrompt('${i.id}')">${i.kanban?'取消 Kanban':'标为 Kanban'}</button>`
+    : "";
+  const kTag = i.kanban
+    ? '<span class="tag t-purple">Kanban</span>'
+    : '<span class="tag t-gray">非 Kanban</span>';
+  // 层 A · 因子 Risk（可覆盖）
+  const rManual = i.riskOverride && i.riskOverride.value===i.risk;
+  const rSrc = rManual
+    ? `人工覆盖（${i.riskOverride.by} · ${i.riskOverride.at}：${i.riskOverride.reason}）`
+    : "自动 · params 越限数";
+  const rBtn = canToggle
+    ? `<button class="btn sm" style="margin-left:8px" onclick="toggleRiskPrompt('${i.id}')">改风险</button>`
+    : "";
+  const rCls = i.risk==="高"?"t-danger":i.risk==="中"?"t-warn":"t-gray";
+  const rTag = `<span class="tag ${rCls}">风险:${i.risk}</span>`;
+  // 层 B · 上游事实（只读）
+  const subList = (i.affectedLots||[]).map(l=>`${l.lot}·${l.subType||'—'}`).join(' / ') || '—';
+  // 层 C · 派生 必须上会
+  const must = mustMeet(i);
+  const mTag = must
+    ? '<span class="tag t-purple">必须上会</span>'
+    : '<span class="tag t-gray">非必须上会</span>';
   return `
     <div class="kv"><b>状态</b><span>${statusTag(i.status)} ${isOverdue(i)?'<span class="tag t-danger">已超时</span>':''}</span></div>
+    <div class="kv"><b>Kanban<small class="muted"> · 因子</small></b><span>${kTag} <span class="muted" style="font-size:12px">${kSrc}</span>${kBtn}</span></div>
+    <div class="kv"><b>风险<small class="muted"> · 因子</small></b><span>${rTag} <span class="muted" style="font-size:12px">${rSrc}</span>${rBtn}</span></div>
+    <div class="kv"><b>子批<small class="muted"> · 上游</small></b><span class="muted" style="font-size:12.5px">${subList}（lot.subType，只读）</span></div>
+    <div class="kv"><b>主控图<small class="muted"> · 上游</small></b><span class="muted" style="font-size:12.5px">${i.chartLevel||'—'}（chartLevel，只读）</span></div>
+    <div class="kv"><b>必须上会<small class="muted"> · 派生</small></b><span>${mTag} <span class="muted" style="font-size:12px">${mustMeetWhy(i)}</span></span></div>
     <div class="kv"><b>负责人</b><span>${i.owner}（按 site→owner 注册表解析）</span></div>
     <div class="kv"><b>站点</b><span>${i.site}</span></div>
     <div class="kv"><b>来源</b><span>${i.sourceAlarmId? "升级自告警 "+i.sourceAlarmId : "预置"}</span></div>
@@ -504,7 +650,16 @@ function footFor(i){
   } else {
     if(i.status==="处理中") btns=`<button class="btn primary" onclick="submitApproval('${i.id}');openIssue('${i.id}')">提交审批</button>`;
     if(i.status==="已批准") btns=`<button class="btn ok" onclick="resolveIssue('${i.id}');openIssue('${i.id}')">标记解决</button>`;
-    if(i.status==="已解决") btns=`<button class="btn" onclick="createReport('${i.id}');closeDrawer()">发起汇报</button>`;
+    if(i.status==="已解决"){
+      const r=activeReportOf(i);
+      if(mustMeet(i)){
+        // 有活跃 Report 时不再放按钮（防重复发起）；进度看抽屉里的「汇报记录」区块
+        btns = r ? "" : `<button class="btn" onclick="createReport('${i.id}');closeDrawer()">发起汇报</button>`;
+      } else {
+        btns = `<button class="btn ok" onclick="closeIssue('${i.id}');closeDrawer()">关闭</button>`
+          + (r ? "" : `<button class="btn ghost" onclick="createReport('${i.id}');closeDrawer()">发起汇报（可选）</button>`);
+      }
+    }
   }
   return btns
     + `<button class="btn ghost" onclick="openIssuePage('${i.id}')" title="整页可收藏/分享/打印">⤢ 展开为整页</button>`
@@ -601,6 +756,69 @@ function doReject(id){
   ev(i,"审批打回",cur.name,`${cur.role} 打回：${txt}`,true);
   pushNotif("工程师",id,`Issue ${id} 被 ${cur.role} 打回：${txt}`,"Issue 工作台");
   closeDrawer(); toast("已打回 → 工程师工作台置顶 + 通知"); render();
+}
+
+/* ---- 因子层覆盖（决策 #9）：Kanban / Risk，owner + 审批经理可改、必填理由、落决策事件 ----
+   级联：任一覆盖导致「必须上会」由 ✓ → ✗，且已有待汇报 Report → 自动移出（保留历史）。 */
+function purgePendingReportsIfDropped(i){
+  let removed=0;
+  i.reportIds.forEach(rid=>{ const r=reportById(rid); if(r && r.status==="待汇报"){ r.status="移出"; removed++; }});
+  store.reports = store.reports.filter(r=>r.status!=="移出");
+  store.meetings.forEach(m=>{ m.agenda = m.agenda.filter(rid=>reportById(rid)); });
+  return removed;
+}
+function toggleKanbanPrompt(id){
+  const i=issueById(id); const becoming=!i.kanban;
+  drawer((becoming?"标为 Kanban":"取消 Kanban"), i.id+" · "+i.title, `
+    <div class="kv"><b>当前</b><span>${i.kanban?'<span class="tag t-purple">Kanban</span>':'<span class="tag t-gray">非 Kanban</span>'} → ${becoming?'<span class="tag t-purple">Kanban</span>':'<span class="tag t-gray">非 Kanban</span>'}</span></div>
+    <div class="prose" style="margin-top:8px">Kanban 是重要度信号（hot lot 判定），只是<b>必须上会</b>派生规则的因子之一。改它会重算「必须上会」——若由 ✓ → ✗ 且已有「待汇报」Report，将自动移出（旧 Report 留痕）。</div>
+    <div class="sec">理由（必填 · 落决策事件）</div>
+    <textarea id="kbReason" rows="4" placeholder="${becoming?'例：客户加急批次，业务方口头确认按 Kanban 处理':'例：lot 重排后已无 hot lot，按非 Kanban 处理'}"></textarea>
+  `, `<button class="btn primary" onclick="doToggleKanban('${id}')">确认</button><button class="btn ghost" onclick="closeDrawer()">取消</button>`);
+}
+function doToggleKanban(id){
+  const txt=(document.getElementById("kbReason").value||"").trim();
+  if(!txt){ toast("请填写理由"); return; }
+  const i=issueById(id); const becoming=!i.kanban;
+  const wasMust = mustMeet(i);
+  i.kanban=becoming;
+  i.kanbanOverride={ value:becoming, reason:txt, by:store.role, at:tsNow() };
+  ev(i,"Kanban 变更",store.role,`${becoming?'标为':'取消'} Kanban：${txt}（必须上会 ${wasMust?'✓':'✗'}→${mustMeet(i)?'✓':'✗'}）`,true);
+  let removed=0;
+  if(wasMust && !mustMeet(i)) removed = purgePendingReportsIfDropped(i);
+  closeDrawer();
+  toast(`已${becoming?'标为':'取消'} Kanban${removed?`（必须上会翻为 ✗ · 移出 ${removed} 条待汇报）`:''}`);
+  render();
+  if(store.view!=="Issue 详情页") openIssue(id);
+}
+function toggleRiskPrompt(id){
+  const i=issueById(id);
+  const opt=(v)=>`<option value="${v}" ${i.risk===v?'selected':''}>${v}</option>`;
+  drawer("改风险等级", i.id+" · "+i.title, `
+    <div class="kv"><b>当前</b><span>${riskTag(i)} <span class="muted" style="font-size:12px">${i.riskOverride?'人工 · '+i.riskOverride.by:'自动 · params 越限数'}</span></span></div>
+    <div class="prose" style="margin-top:8px">Risk 是<b>必须上会</b>派生规则的因子之一（chartLevel=ACP 且 风险∈{中,高} → 满足）。改它会重算「必须上会」——若由 ✓ → ✗ 且已有「待汇报」Report，将自动移出。</div>
+    <div class="sec">改为</div>
+    <select class="fld" id="riskSel" style="width:160px">${opt("低")}${opt("中")}${opt("高")}</select>
+    <div class="sec">理由（必填 · 落决策事件）</div>
+    <textarea id="riskReason" rows="4" placeholder="例：FDC 量测复核显示偏离更大，按高风险处理"></textarea>
+  `, `<button class="btn primary" onclick="doToggleRisk('${id}')">确认</button><button class="btn ghost" onclick="closeDrawer()">取消</button>`);
+}
+function doToggleRisk(id){
+  const v=document.getElementById("riskSel").value;
+  const txt=(document.getElementById("riskReason").value||"").trim();
+  if(!txt){ toast("请填写理由"); return; }
+  const i=issueById(id);
+  if(v===i.risk){ toast("等级未变化"); return; }
+  const wasMust = mustMeet(i);
+  i.risk=v;
+  i.riskOverride={ value:v, reason:txt, by:store.role, at:tsNow() };
+  ev(i,"风险变更",store.role,`改风险为 ${v}：${txt}（必须上会 ${wasMust?'✓':'✗'}→${mustMeet(i)?'✓':'✗'}）`,true);
+  let removed=0;
+  if(wasMust && !mustMeet(i)) removed = purgePendingReportsIfDropped(i);
+  closeDrawer();
+  toast(`已改风险 → ${v}${removed?`（必须上会翻为 ✗ · 移出 ${removed} 条待汇报）`:''}`);
+  render();
+  if(store.view!=="Issue 详情页") openIssue(id);
 }
 
 /* ---- 5. 待汇报清单（汇报人·会前 · 派生看板） ---- */
@@ -741,9 +959,14 @@ VIEWS["Issue 全表"] = ()=>{
   const rows = list.map(i=>{
     const od=isOverdue(i); const hl=hoursLeft(i);
     const sla = od? `<span class="tag t-danger">已超时</span>` : (["处理中","审批中"].includes(i.status)? `${hl}h` : "—");
+    const mustCell = mustMeet(i)
+      ? `<span class="tag t-purple" title="${mustMeetWhy(i)}">必须上会</span>`
+      : `<span class="tag t-gray" title="${mustMeetWhy(i)}">否</span>`;
     return `<tr class="clickable" onclick="openIssue('${i.id}')">
       <td class="mono">${i.id}</td>
       <td>${i.title}</td>
+      <td>${mustCell}</td>
+      <td>${riskTag(i)}</td>
       <td>${i.site}</td>
       <td>${i.owner}</td>
       <td>${statusTag(i.status)}</td>
@@ -764,8 +987,8 @@ VIEWS["Issue 全表"] = ()=>{
     </div>
     <div class="card" style="overflow:auto">
       <table class="tbl"><thead><tr>
-        <th>ID</th><th>标题</th><th>站点</th><th>负责人</th><th>状态</th><th>时效</th><th>汇报</th><th></th>
-      </tr></thead><tbody>${list.length? rows : `<tr><td colspan="8"><div class="empty">无匹配记录</div></td></tr>`}</tbody></table>
+        <th>ID</th><th>标题</th><th>必须上会</th><th>风险</th><th>站点</th><th>负责人</th><th>状态</th><th>时效</th><th>汇报</th><th></th>
+      </tr></thead><tbody>${list.length? rows : `<tr><td colspan="10"><div class="empty">无匹配记录</div></td></tr>`}</tbody></table>
     </div>`;
 };
 function focusSearch(){ const el=document.querySelector('#main input'); if(el){ el.focus(); el.setSelectionRange(el.value.length,el.value.length); } }

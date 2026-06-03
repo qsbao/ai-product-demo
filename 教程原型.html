@@ -210,7 +210,7 @@ const CH = [
     ${ex("感受差距：同一个落地页，两种做法", (function(){
       const widget = `<div class="card"><div class="row"><div class="grow"><div class="title">我的告警 · 12</div><div class="sub">点进去再说</div></div></div>
         <div class="row"><div class="grow"><div class="title">我的待办 · 7</div><div class="sub">点进去再说</div></div></div>
-        <div class="row"><div class="grow"><div class="title">我的汇报 · 3</div><div class="sub">点进去再说</div></div></div>
+        <div class="row"><div class="grow"><div class="title">我的议题 · 3</div><div class="sub">点进去再说</div></div></div>
         <div class="row"><div class="grow"><div class="title">我的审批 · 5</div><div class="sub">点进去再说</div></div></div></div>
         <div class="anno">❌ <b>widget 堆砌</b>：四个计数卡，没有一个"此刻就能按下去的主动作"。用户还得自己拼信息、自己决定先点哪个——这就是又一个 Jira。</div>`;
       const moment = `<div class="card"><div class="row"><span class="sev high"></span><div class="grow"><div class="title">曝光剂量漂移 <span class="tag t-warn">可聚合 ×2</span></div><div class="sub">AL-2287 · Fab3-Litho · 只读证据</div></div><div class="actions"><button class="btn primary sm">升级为 Issue</button><button class="btn sm">Ack</button></div></div>
@@ -416,7 +416,7 @@ const CH = [
   const grid=[
     {role:"工程师", moment:"推进·处理 Issue", action:"提交审批/标记解决", notif:"Issue 被打回/即将超时", perm:"自己名下 Issue 运营字段"},
     {role:"审批经理", moment:"轮到我审批", action:"批准/打回", notif:"有 Issue 待你审批", perm:"current_level 命中时 approve/reject"},
-    {role:"会议主持人", moment:"会前·准备上会", action:"确认上会/重排", notif:"会议 T-1 提醒", perm:"Report 状态/排期"},
+    {role:"会议主持人", moment:"会前·准备上会", action:"重排到别会", notif:"会议 T-1 提醒", perm:"议题 状态/排期"},
   ];
   const hotN=T.by.notif, hotP=T.by.perm;
   const gridTbl=`<div class="card" style="overflow:auto"><table class="tbl"><thead><tr>
@@ -431,7 +431,8 @@ const CH = [
   const permTbl = hotP? `<div style="margin-top:14px"><div class="xlabel" style="color:var(--warn)">🔒 权限矩阵(读出后)</div><div class="card" style="overflow:auto"><table class="tbl"><thead><tr><th>角色</th><th>能进的视图</th><th>能按的写动作</th></tr></thead><tbody>
     <tr><td>工程师</td><td>分诊/工作台(仅自己名下)/通知中心</td><td>建 Issue、推进自己的 Issue</td></tr>
     <tr><td>审批经理</td><td>待我审批(仅 current_level 命中)</td><td>approve/reject</td></tr>
-    <tr><td>会议主持人</td><td>待汇报/会议议程</td><td>Report 排期/结论</td></tr>
+    <tr><td>会议主持人</td><td>待汇报/会议议程</td><td>议题 排期/结论</td></tr>
+    <tr><td>Owner / 审批经理</td><td>Issue 详情·报告区</td><td>报告 url（重试外部生成）</td></tr>
     </tbody></table></div><div class="anno">每个时刻视图<b>只暴露该时刻需要的那一个写动作</b>——这天然就是最小权限。事实字段全局只读。<b>不需要独立的 RBAC 设计。</b></div></div>`:"";
 
   return `<div class="wrap lesson">

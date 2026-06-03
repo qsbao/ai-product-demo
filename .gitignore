@@ -8,3 +8,4 @@ _test.mjs
 .playwright-cli/
 原型.html.playwright-cli/
 *.yaml
+update.md

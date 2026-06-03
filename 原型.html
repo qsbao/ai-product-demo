@@ -179,6 +179,9 @@ const RULES = {
   approvalLadder: ["三级经理","四级经理","五级经理"],
   // site → 站点负责人 注册表（本系统自有引用数据，管理员可改）
   siteOwners: { "Fab2-CMP":"李工", "Fab2-Etch":"王工", "Fab3-Litho":"赵工", "Fab3-Diff":"陈工" },
+  // engineer → team 注册表（本系统自有引用数据，管理员可改）—— 配合所有权共享 + team 默认视图（领域决策）
+  // 同 team 内任何成员对该 team 的 Alarm/Issue 有完整操作权；assignee 仅作审批链锚点 + 「仅我的」过滤依据
+  engineerTeams: { "李工":"Fab2-Team", "王工":"Fab2-Team", "赵工":"Fab3-Team", "陈工":"Fab3-Team" },
   // 决策 #9 · 因子层硬编码规则（先粗后细，对齐决策 #3 不做配置 UI）
   // Kanban 自动判定：受影响批次中任一 lot.priority==0（hot lot）→ Kanban
   isKanbanAuto: (iss)=> (iss.affectedLots||[]).some(l=>l.priority===0),
@@ -291,6 +294,8 @@ function seed(){
   store = {
     role: "工程师",
     view: "分诊收件箱",
+    // 工程师角色身份。默认 team 视图下，仅用于 owner=me 的「仅我的」过滤；非演示角色 currentUser 无意义。
+    currentUser: "李工",   // 属 Fab2-Team
     detailIssueId: null,   // 当前整页详情查看的 Issue
     detailReturn: null,    // 从哪个视图进入整页（返回用）
     drawerIssueId: null,   // 抽屉当前显示的 Issue（用于异步动作后同步重绘抽屉）
@@ -442,8 +447,10 @@ function retryReportDoc(issueId){
 function mkIssue(site,title,hAgo,status,level,extra){
   const id = "ISS-"+(++seq.issue);
   const owner = RULES.siteOwners[site] || "未分派";
+  // 团队 snapshot：创建时一次性写入 issue.team，组织变动不追溯（与审批链 snapshot 同模式）
+  const team = teamOf(owner);
   const chain = RULES.approvalLadder.map((r,i)=>({ level:i+1, role:r, name:roleName(r) }));
-  const iss = { id, title, site, owner, status, currentLevel:level||0, approvalChain:chain,
+  const iss = { id, title, site, owner, team, status, currentLevel:level||0, approvalChain:chain,
     createdAt:hAgo,
     // 决策 #2 补 · 来源事实字段：'triage'（分诊升级）/ 'external-MES' / 'external-SPC' …
     source:"triage", sourceAlarmId:null,
@@ -472,6 +479,8 @@ function mkIssue(site,title,hAgo,status,level,extra){
   return iss;
 }
 function roleName(r){ return ({ "三级经理":"刘经理","四级经理":"周经理","五级经理":"吴总" })[r]||r; }
+/* team 解析：engineer → team；用于 Issue 创建时 snapshot、以及分诊层的动态 lookup */
+function teamOf(eng){ return eng ? (RULES.engineerTeams[eng] || null) : null; }
 
 /* mutators / helpers ----------------------------------------- */
 function ev(iss,type,actor,text,decision){
@@ -568,18 +577,45 @@ function renderBell(){
    ============================================================ */
 const VIEWS = {};
 
-/* ---- 1. 分诊收件箱（工程师·入口） ---- */
+/* 工程师面向视图的范围切换：默认 "team"（所有权共享），可切 "me"（仅我的）。
+   分诊收件箱：team 由 alarm.owner → engineerTeams 动态 lookup（alarm 还未升 Issue）。
+   Issue 工作台：team 用 issue.team snapshot（创建时已写）。 */
+let inboxScope="team", wbScope="team";
+function setScope(varName, val){
+  if(varName==="inboxScope") inboxScope=val;
+  else if(varName==="wbScope") wbScope=val;
+  render();
+}
+function scopeToggle(varName, current, myTeam, me){
+  const teamLabel = myTeam || "—";
+  return `<div class="tabs" title="工程师面向视图默认 team；切「仅我的」按 assignee=me 过滤">
+    <button class="tab ${current==='team'?'active':''}" onclick="setScope('${varName}','team')">我 team · ${teamLabel}</button>
+    <button class="tab ${current==='me'?'active':''}" onclick="setScope('${varName}','me')">仅我的 · ${me}</button>
+  </div>`;
+}
+
+/* ---- 1. 分诊收件箱（工程师·入口） ----
+   默认 team 视图（所有权共享）：按 alarm.owner → engineerTeams 动态 lookup 过滤。
+   alarm 还未升 Issue，team 还没 snapshot 的时机，因此是 lookup 而非 snapshot。 */
 VIEWS["分诊收件箱"] = ()=>{
-  const q=derive.triageQueue();
-  // 聚合提示：同站点同类型 >1
-  const groups={}; q.forEach(a=>{ const k=a.site+"|"+a.type; (groups[k]=groups[k]||[]).push(a); });
-  let rows = q.map(a=>{
+  const me = store.currentUser;
+  const myTeam = teamOf(me);
+  const all = derive.triageQueue();
+  const ownerOf = (a)=> RULES.siteOwners[a.site] || "";
+  const list = inboxScope==="team"
+    ? all.filter(a=> teamOf(ownerOf(a)) === myTeam)
+    : all.filter(a=> ownerOf(a) === me);
+  // 聚合提示：在当前范围内按 站点+类型 统计
+  const groups={}; list.forEach(a=>{ const k=a.site+"|"+a.type; (groups[k]=groups[k]||[]).push(a); });
+  let rows = list.map(a=>{
     const k=a.site+"|"+a.type; const dup=groups[k].length>1;
+    const owner = ownerOf(a) || "未分派";
+    const mine = owner === me;
     return `<div class="row">
       <span class="sev ${a.severity}"></span>
       <div class="grow">
         <div class="title">${a.type} ${dup?`<span class="tag t-warn">可聚合 ×${groups[k].length}</span>`:""}</div>
-        <div class="sub">${a.id} · 站点 ${a.site} · ${-a.hAgo}h 前 · 只读事实证据</div>
+        <div class="sub">${a.id} · 站点 ${a.site} · owner ${owner}${mine?'':` <span class="tag t-info">同 team</span>`} · ${-a.hAgo}h 前 · 只读事实证据</div>
       </div>
       <div class="actions">
         <button class="btn primary sm" onclick="escalate('${a.id}')">升级为 Issue</button>
@@ -587,18 +623,23 @@ VIEWS["分诊收件箱"] = ()=>{
         <button class="btn ghost sm" onclick="ignoreAlarm('${a.id}')">忽略</button>
       </div></div>`;
   }).join("");
+  const emptyText = all.length
+    ? (inboxScope==="team" ? "我 team 范围内无待分诊告警（可切「仅我的」对比）" : `仅 ${me} 名下无待分诊告警（可切「我 team」看队友的）`)
+    : "收件箱已清空 🎉 所有新告警都已分诊";
   return `
-    <div class="pagehead"><h1>分诊收件箱</h1><p>机器拿不准的新告警落在这里，需要你做第一个人工决策：升级 / Ack / 忽略。告警是<b>只读证据</b>，升级后由 Issue 承载工作。</p></div>
-    <div class="hint">演示：对带「可聚合」标记的告警点 <b>升级为 Issue</b> → 该告警出列，切到 <b>Issue 工作台</b> 可见新 Issue（owner 已按注册表解析、审批链已快照）。</div>
-    <div class="card">${q.length? rows : `<div class="empty">收件箱已清空 🎉 所有新告警都已分诊</div>`}</div>`;
+    <div class="pagehead"><h1>分诊收件箱</h1><p>机器拿不准的新告警落在这里——按所有权共享，<b>本 team</b> 内任何人都可分诊。告警是<b>只读证据</b>，升级后由 Issue 承载工作。</p></div>
+    <div class="hint">默认 <b>我 team</b>：按 <code>alarm.owner.team == 我的 team</code> 动态 lookup 过滤（alarm 还未升 Issue，team 不 snapshot）。切「仅我的」 = owner=${me}。</div>
+    <div class="toolbar">${scopeToggle("inboxScope", inboxScope, myTeam, me)}<span class="muted" style="font-size:12.5px">共 ${list.length} / ${all.length} 条</span></div>
+    <div class="card">${list.length? rows : `<div class="empty">${emptyText}</div>`}</div>`;
 };
 function escalate(id){
   const a=store.alarms.find(x=>x.id===id); if(!a) return;
   a.status="已升级";
   const owner=RULES.siteOwners[a.site]||"未分派";
+  const team=teamOf(owner);   // snapshot at creation
   const id2="ISS-"+(++seq.issue);
   const chain=RULES.approvalLadder.map((r,i)=>({level:i+1,role:r,name:roleName(r)}));
-  const iss={ id:id2, title:a.type+"（升级自告警）", site:a.site, owner, status:"处理中", currentLevel:0,
+  const iss={ id:id2, title:a.type+"（升级自告警）", site:a.site, owner, team, status:"处理中", currentLevel:0,
     approvalChain:chain, createdAt:CLOCK,
     source:"triage", sourceAlarmId:a.id,
     events:[], topicIds:[], reportDocId:null, pinned:false,
@@ -607,7 +648,7 @@ function escalate(id){
     kanban:false, kanbanAuto:false, kanbanOverride:null,
     risk:"低", riskAuto:"低", riskOverride:null,
     chartLevel:"" };
-  ev(iss,"创建","你",`由告警 ${a.id} 升级；按注册表分派给 ${owner}；快照审批链 ${chain.map(c=>c.role).join("→")}`,true);
+  ev(iss,"创建","你",`由告警 ${a.id} 升级；按注册表分派给 ${owner}（team=${team||'—'}）；快照审批链 ${chain.map(c=>c.role).join("→")}`,true);
   store.issues.unshift(iss);
   toast(`已创建 ${id2}，分派给 ${owner} → 见 Issue 工作台`);
   render();
@@ -615,41 +656,60 @@ function escalate(id){
 function ackAlarm(id){ const a=store.alarms.find(x=>x.id===id); a.status="已ack"; toast("已 Ack（写入告警运营字段）"); render(); }
 function ignoreAlarm(id){ const a=store.alarms.find(x=>x.id===id); a.status="已忽略"; toast("已标记忽略"); render(); }
 
-/* ---- 2. Issue 工作台（工程师·推进） + 事件时间线抽屉 ---- */
+/* ---- 2. Issue 工作台（工程师·推进） + 事件时间线抽屉 ----
+   默认 team 视图：基于 issue.team snapshot（创建时已写）过滤；切「仅我的」按 assignee=me。
+   所有权共享：team 成员对该 Issue 有完整操作权；assignee 仅作审批链锚点 + 「仅我的」过滤依据。 */
 let wbTab="全部", wbIncludeClosed=false;
 VIEWS["Issue 工作台"] = ()=>{
+  const me = store.currentUser;
+  const myTeam = teamOf(me);
+  const teamOfIssue = (i)=> i.team || teamOf(i.owner);   // 兜底：旧数据无 snapshot 时回退到 lookup
+  // 1) 全局未关闭/含已关闭
   let base = wbIncludeClosed ? store.issues : derive.myIssues();
+  // 2) 范围过滤（team 默认 / 仅我的）
+  base = wbScope==="team"
+    ? base.filter(i=> teamOfIssue(i) === myTeam)
+    : base.filter(i=> i.owner === me);
+  // 3) 类别 tab
   let list = base;
-  if(wbTab==="超时") list=derive.overdue();
-  if(wbTab==="已升级") list=derive.escalated();
-  if(wbTab==="必须上会") list=base.filter(i=>mustMeet(i));
-  if(wbTab==="Kanban") list=base.filter(i=>i.kanban);
-  // 排序：置顶 > 超时 > 其它
+  if(wbTab==="超时")     list = base.filter(i=> isOverdue(i) && !["已解决","已关闭"].includes(i.status));
+  if(wbTab==="已升级")   list = base.filter(i=> i.status==="审批中" && i.currentLevel>=2);
+  if(wbTab==="必须上会") list = base.filter(i=>mustMeet(i));
+  if(wbTab==="Kanban")  list = base.filter(i=>i.kanban);
+  // 排序：置顶 > 超时 > 其它（团队卡点优先级）
   list=[...list].sort((x,y)=> (y.pinned-x.pinned) || (isOverdue(y)-isOverdue(x)));
-  const mCount = derive.myIssues().filter(i=>mustMeet(i)).length;
-  const kCount = derive.myIssues().filter(i=>i.kanban).length;
-  const tab=(t)=>`<button class="tab ${wbTab===t?'active':''}" onclick="wbTab='${t}';render()">${t}${t==='超时'?` (${derive.overdue().length})`:t==='已升级'?` (${derive.escalated().length})`:t==='必须上会'?` (${mCount})`:t==='Kanban'?` (${kCount})`:''}</button>`;
+  // 当前范围下的计数（tab 角标和范围一致，不显示全局）
+  const mCount = base.filter(i=>mustMeet(i)).length;
+  const kCount = base.filter(i=>i.kanban).length;
+  const odCount = base.filter(i=> isOverdue(i) && !["已解决","已关闭"].includes(i.status)).length;
+  const escCount = base.filter(i=> i.status==="审批中" && i.currentLevel>=2).length;
+  const tab=(t)=>`<button class="tab ${wbTab===t?'active':''}" onclick="wbTab='${t}';render()">${t}${t==='超时'?` (${odCount})`:t==='已升级'?` (${escCount})`:t==='必须上会'?` (${mCount})`:t==='Kanban'?` (${kCount})`:''}</button>`;
   const rows=list.map(i=>{
     const od=isOverdue(i); const hl=hoursLeft(i);
     // 行内门禁徽：必须上会优先（派生 gate）；否则回退到 Kanban tag（重要度因子的覆盖可见性）
     const gateBadge = mustMeet(i) ? mustMeetTag(i) : kanbanTag(i);
     // 决策 #11 · 报告 badge 仅对必须上会的 Issue 显示（其他 Issue 即便有报告也无操作意义）
     const docBadge = mustMeet(i) ? ` ${reportDocBadge(i,{compact:true})}` : "";
+    // 同 team 但非我 assignee 的 Issue 标「同事」，提示这是别人 owner 但我有完整操作权
+    const ownerTag = (i.owner && i.owner!==me) ? ` <span class="tag t-info">同事</span>` : "";
     return `<div class="row ${i.pinned?'pinned':''} clickable" onclick="openIssue('${i.id}')">
       <div class="grow">
         <div class="title">${i.pinned?'📌 ':''}${i.title} ${gateBadge} ${statusTag(i.status)} ${od?`<span class="tag t-danger">已超时</span>`:(hl<=8&&["处理中","审批中"].includes(i.status)?`<span class="tag t-warn">剩 ${hl}h</span>`:"")}${docBadge}</div>
-        <div class="sub">${i.id} · ${i.site} · 负责人 ${i.owner}${i.status==="审批中"?` · 审批至 ${i.approvalChain[i.currentLevel-1]?.role||""}`:""}${topicHintSub(i)}</div>
+        <div class="sub">${i.id} · ${i.site} · 负责人 ${i.owner}${ownerTag}${i.status==="审批中"?` · 审批至 ${i.approvalChain[i.currentLevel-1]?.role||""}`:""}${topicHintSub(i)}</div>
       </div>
       <div class="actions" onclick="event.stopPropagation()">${primaryAction(i)}
         <button class="btn ghost sm" onclick="openIssue('${i.id}')">详情</button>
       </div></div>`;
   }).join("");
+  const emptyText = wbTab==="全部"
+    ? (wbScope==="team" ? `我 team (${myTeam||'—'}) 内暂无 Issue` : `仅 ${me} 名下暂无 Issue（可切「我 team」查看队友）`)
+    : "该分类下暂无 Issue";
   return `
-    <div class="pagehead"><h1>Issue 工作台</h1><p>我名下的 Issue，按「需我动作 / 即将超时」自动置顶。每条只暴露当前状态下的<b>那一个</b>主动作。</p></div>
+    <div class="pagehead"><h1>Issue 工作台</h1><p>默认 <b>我 team</b> 视图——所有权共享，team 内任何人对该 Issue 有完整操作权；assignee 仅作为审批链锚点 + 「仅我的」过滤依据。按团队卡点优先级排序（置顶 / 超时上前）。</p></div>
     <div class="hint"><b>必须上会</b>（紫标 · 派生 = Kanban ∧ 子批∈{A,AA,AE} ∧ (主控图=KIP ∨ ACP+风险≥中)）：审批通过自动进「已解决」+ 自动建议题 + 自动排期，上会·成功后自动关闭。📄 角标 = 报告文档状态（决策 #11，1:1 Issue · 外部权威源）。<b>非必须上会</b>：审批通过<b>直接关闭</b>，跳过已解决。详情抽屉「概览」可改 Kanban / Risk 因子（必填理由）。</div>
-    <div class="toolbar"><div class="tabs">${tab("全部")}${tab("必须上会")}${tab("Kanban")}${tab("超时")}${tab("已升级")}</div>
+    <div class="toolbar">${scopeToggle("wbScope", wbScope, myTeam, me)}<div class="tabs">${tab("全部")}${tab("必须上会")}${tab("Kanban")}${tab("超时")}${tab("已升级")}</div>
       <label class="muted" style="font-size:12.5px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:8px"><input type="checkbox" ${wbIncludeClosed?'checked':''} onchange="wbIncludeClosed=this.checked;wbTab='全部';render()"> 含已关闭</label></div>
-    <div class="card">${list.length? rows : `<div class="empty">该分类下暂无 Issue</div>`}</div>`;
+    <div class="card">${list.length? rows : `<div class="empty">${emptyText}</div>`}</div>`;
 };
 function statusTag(s){ const m={"处理中":"t-info","审批中":"t-purple","已解决":"t-ok","已关闭":"t-gray"}; return `<span class="tag ${m[s]||'t-gray'}">${s}</span>`; }
 /* 决策 #9 派生层：必须上会 = f(Kanban, risk, subType, chartLevel)。无独立状态，无独立 override。 */
@@ -1655,7 +1715,7 @@ function markAllRead(){ store.notifications.forEach(n=>{ if(n.role===store.role)
    点任一行进入与 Issue 工作台「同一个」详情抽屉 openIssue()。 */
 let tblQ="", tblStatus="全部";
 VIEWS["Issue 全表"] = ()=>{
-  const all = store.issues; // 全量，含已关闭——与工作台「我名下、未关闭」的过滤口径不同
+  const all = store.issues; // 全量，含已关闭——与工作台「我 team、未关闭」的过滤口径不同
   const q = tblQ.trim();
   let list = all.filter(i=>{
     const okS = tblStatus==="全部" || i.status===tblStatus;

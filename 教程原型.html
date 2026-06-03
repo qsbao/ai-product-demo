@@ -323,7 +323,7 @@ const CH = [
     </div>
 
     ${ex("练习 A · 选主角色", renderQuiz("c2",
-      "5 个角色（工程师 / 审批经理 / 汇报人 / 管理员 / 值班）。该先打穿谁的时刻链？",
+      "5 个角色（工程师 / 审批经理 / 会议主持人 / 管理员 / 值班）。该先打穿谁的时刻链？",
       [
         {text:"5 个角色各做一个 dashboard，公平对称", correct:false, why:"这是“对称陷阱”。低频角色根本不来看，价值为零，还稀释主角色设计。"},
         {text:"工程师 —— 它驱动引力中心 Issue，且高频", correct:true, why:"主角色必须对齐引力中心。先把工程师的入口→推进→卡点打穿,其余角色“派生”。"},
@@ -331,7 +331,7 @@ const CH = [
       ]))}
 
     <h2>低频角色：不造入口，靠"通知 + whose-turn"派生</h2>
-    <p>审批经理 / 汇报人不是每天主动来的，他们被主角色的<b>状态变更卷入</b>。最佳形态是"一条通知 + 一个'轮到我'视图"。多级审批<b>不产生多视图</b>——四级/五级看到的是同一个"待我审批"，区别只是游标走到了谁。</p>
+    <p>审批经理 / 会议主持人不是每天主动来的，他们被主角色的<b>状态变更卷入</b>。最佳形态是"一条通知 + 一个'轮到我'视图"。多级审批<b>不产生多视图</b>——四级/五级看到的是同一个"待我审批"，区别只是游标走到了谁。</p>
 
     ${ex("练习 B · 认出反模式", renderQuiz("c2b",
       "有人提议：“把'超时清单''待汇报清单'都建成独立的数据库表来管理。” 这是哪个反模式？",
@@ -416,7 +416,7 @@ const CH = [
   const grid=[
     {role:"工程师", moment:"推进·处理 Issue", action:"提交审批/标记解决", notif:"Issue 被打回/即将超时", perm:"自己名下 Issue 运营字段"},
     {role:"审批经理", moment:"轮到我审批", action:"批准/打回", notif:"有 Issue 待你审批", perm:"current_level 命中时 approve/reject"},
-    {role:"汇报人", moment:"会前·准备上会", action:"确认上会/重排", notif:"会议 T-1 提醒", perm:"Report 状态/排期"},
+    {role:"会议主持人", moment:"会前·准备上会", action:"确认上会/重排", notif:"会议 T-1 提醒", perm:"Report 状态/排期"},
   ];
   const hotN=T.by.notif, hotP=T.by.perm;
   const gridTbl=`<div class="card" style="overflow:auto"><table class="tbl"><thead><tr>
@@ -426,12 +426,12 @@ const CH = [
   const notifTbl = hotN? `<div style="margin-top:14px"><div class="xlabel" style="color:var(--warn)">📨 通知通道(读出后)</div><div class="card" style="overflow:auto"><table class="tbl"><thead><tr><th>触发</th><th>通知谁</th><th>落到哪个视图</th><th>通道</th></tr></thead><tbody>
     <tr><td>Issue 提交审批</td><td>审批经理</td><td>待我审批</td><td>站内 + <b>外部 push</b></td></tr>
     <tr><td>审批被打回</td><td>工程师</td><td>工作台(置顶)</td><td>站内 + 实时 push</td></tr>
-    <tr><td>会议 T-1</td><td>汇报人</td><td>待汇报清单</td><td>外部 push</td></tr>
+    <tr><td>会议 T-1</td><td>会议主持人</td><td>待汇报清单</td><td>外部 push</td></tr>
     </tbody></table></div><div class="anno">原则:高频角色站内+digest即可;<b>低频/卷入式角色(审批/汇报/值守)必须外部触达</b>,否则他们不会回来。</div></div>`:"";
   const permTbl = hotP? `<div style="margin-top:14px"><div class="xlabel" style="color:var(--warn)">🔒 权限矩阵(读出后)</div><div class="card" style="overflow:auto"><table class="tbl"><thead><tr><th>角色</th><th>能进的视图</th><th>能按的写动作</th></tr></thead><tbody>
     <tr><td>工程师</td><td>分诊/工作台(仅自己名下)/通知中心</td><td>建 Issue、推进自己的 Issue</td></tr>
     <tr><td>审批经理</td><td>待我审批(仅 current_level 命中)</td><td>approve/reject</td></tr>
-    <tr><td>汇报人</td><td>待汇报/会议议程</td><td>Report 排期/结论</td></tr>
+    <tr><td>会议主持人</td><td>待汇报/会议议程</td><td>Report 排期/结论</td></tr>
     </tbody></table></div><div class="anno">每个时刻视图<b>只暴露该时刻需要的那一个写动作</b>——这天然就是最小权限。事实字段全局只读。<b>不需要独立的 RBAC 设计。</b></div></div>`:"";
 
   return `<div class="wrap lesson">

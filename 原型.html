@@ -148,7 +148,7 @@
       <select id="roleSel" onchange="setRole(this.value)">
         <option value="工程师">工程师</option>
         <option value="审批经理">审批经理</option>
-        <option value="汇报人">汇报人</option>
+        <option value="会议主持人">会议主持人</option>
         <option value="管理员">管理员</option>
       </select>
     </div>
@@ -201,6 +201,8 @@ const RULES = {
 };
 // 模拟"现在"：以一个固定基准 + 自创建以来的相对小时推进。原型用 NOW_BASE 充当当前时刻。
 let CLOCK = 0; // 小时偏移，可在接入健康里"快进时间"演示超时
+const BASE_DATE = new Date(2026, 5, 3, 9, 0); // 2026-06-03 09:00（周三）作为"今天 09:00"基准
+const WEEKDAY_ZH = ["日","一","二","三","四","五","六"];
 
 /* 决策 #10 · 诊断字段（受控枚举，硬编码，呼应决策 #3 不做配置 UI）。
    命名前缀 `diagnosis_*` 表明这是「工程师对 Issue 的诊断」，与上游事实字段、外部系统的 detection 字段区隔。 */
@@ -208,6 +210,74 @@ const DIAGNOSIS_SUBTYPES = ["工艺漂移","设备异常","物料批次","量测
 /* 决策 #2 补 · Issue.source（事实字段，只读）：分诊升级 / 外部系统派单。
    工作台是所有 Issue 的家，不是分诊的下游。 */
 const ISSUE_SOURCES = ["triage","external-MES","external-SPC"];
+
+/* 决策 #7 · Meeting 类型枚举（硬编码，呼应决策 #3）。早会/晚会自动滚动建；专题/其他由主持人手动建。 */
+const MEETING_TYPES = ["早会","晚会","专题","其他"];
+
+/* ============================================================
+   日期 / 排期助手（决策 #7 排期规则）
+   ============================================================ */
+function dateOnly(d){ return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function addDays(d, n){ const r=new Date(d); r.setDate(r.getDate()+n); return r; }
+function fmtYMD(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function weekdayZh(d){ return "周"+WEEKDAY_ZH[d.getDay()]; }
+function isSunday(d){ return d.getDay()===0; }
+function todayDate(){ return dateOnly(BASE_DATE); }   // BASE_DATE 的日期部分
+function nowDateTime(){ const d=new Date(BASE_DATE); d.setHours(d.getHours()+CLOCK); return d; }
+/* 从 i.createdAt（相对 BASE_DATE 的小时数；负数=之前发生）算出绝对发生时间 */
+function occurredAtOf(i){ return new Date(BASE_DATE.getTime() + (i.createdAt||0)*3600*1000); }
+/* 相对日期标签：今日 / 明日 / 昨日 / 周X */
+function relDateLabel(d){
+  const today=todayDate(); const t=dateOnly(d);
+  const diff=Math.round((t-today)/86400000);
+  if(diff===0) return "今日";
+  if(diff===1) return "明日";
+  if(diff===-1) return "昨日";
+  return weekdayZh(d);
+}
+function meetingLabel(m){
+  if(!m) return "";
+  return `${relDateLabel(m.date)} · ${m.type}（${fmtYMD(m.date)}）`;
+}
+
+/* 自动排期算法（决策 #7）：
+   1) window_day = (occurredAt − 13h).date
+   2) 目标 = window_day + 2 天 的 type=早会, status=待召开 的 Meeting
+   3) 兜底：目标不存在/已开过 → 顺延到下一个未开早会
+   返回匹配的 Meeting，或 null（无可用早会，落「待排期」） */
+function findAutoMeeting(occurredAt){
+  const t=new Date(occurredAt); t.setHours(t.getHours()-13);
+  const target=dateOnly(addDays(t, 2));
+  const all=store.meetings.filter(m=>m.type==="早会" && m.status==="待召开");
+  // 先尝试精确命中
+  const exact=all.find(m=>+dateOnly(m.date)===+target);
+  if(exact) return exact;
+  // 顺延：所有 ≥ target 的待召开早会，按日期升序取第一个
+  const future=all.filter(m=>+dateOnly(m.date)>+target).sort((a,b)=>+a.date - +b.date);
+  return future[0] || null;
+}
+
+/* 自动建未来 N 天的早/晚会（周一至六，跳周日；不存时分；约定 "今天" 之前的标 已开） */
+function autoBuildMeetings(){
+  const out=[]; const today=todayDate();
+  // 前 5 天（已开） + 后 14 天（待召开）
+  for(let off=-5; off<=14; off++){
+    const d=addDays(today, off);
+    if(isSunday(d)) continue;
+    const past = off<0;
+    const ymd = fmtYMD(d);
+    ["早会","晚会"].forEach(type=>{
+      out.push({
+        id: `M-${type==="早会"?"AM":"PM"}-${ymd}`,
+        date: d, type,
+        status: past ? "已开" : "待召开",
+        title: `${weekdayZh(d)} · ${type}`,
+        agenda: []
+      });
+    });
+  }
+  return out;
+}
 
 /* ============================================================
    状态层 store（单一可变对象）+ 初始 mock
@@ -232,10 +302,7 @@ function seed(){
     ],
     issues: [],   // 预置 Issue 在 store 赋值后再填充（mkIssue→ev 需要 store.log 已存在）
     reports: [],
-    meetings: [
-      { id:"M-W22", date:"周三 14:00 · 本周工艺评审会", title:"本周工艺评审会", status:"待召开", agenda:[] },
-      { id:"M-W23", date:"下周三 14:00 · 工艺评审会", title:"下周工艺评审会", status:"待召开", agenda:[] },
-    ],
+    meetings: autoBuildMeetings(),  // 决策 #7 · 系统按"周一至六 早/晚会"自动滚动建
     integrationSources: [
       { id:"SRC-MES", name:"MES 告警流", status:"ok", lastSync:"刚刚" },
       { id:"SRC-FDC", name:"FDC 量测数据", status:"failed", lastSync:"43 分钟前", err:"连接超时：fdc-gw:8443 无响应" },
@@ -273,8 +340,9 @@ function seed(){
       affectedLots:[{lot:"L2-7301",wafers:25,stage:"CMP",priority:2,subType:"B"}],
       params:[{name:"磨损率",value:"3.8 nm/wafer",spec:"≤ 3.4",status:"越上限"}],
     }),
-    /* 外部系统 SPC 直派 + 已诊断：演示 diagnosis_* 填充态（已批准准备标记解决/已落字段都可展示）。 */
-    mkIssue("Fab3-Diff","炉管温度均匀性超规（SPC 派单·已诊断）", -20, "已批准", 0, {
+    /* 外部系统 SPC 直派 + 已诊断 + 已解决：演示「等上会」相位
+       （新状态机：审批通过自动→已解决，同事务自动建 Report 并自动排期，决策 #7/#9）。 */
+    mkIssue("Fab3-Diff","炉管温度均匀性超规（SPC 派单·已诊断）", -20, "已解决", 0, {
       source:"external-SPC",
       desc:"SPC 派单：扩散炉 Tube-A 中心区温度均匀性 3σ 超出控制限，三日累计 6 个批次受影响。",
       rootCause:"初判热电偶接触电阻异常导致温度读数漂移。",
@@ -285,10 +353,32 @@ function seed(){
       diagnosisDetection:"现场测试发现中心区热电偶接触电阻异常；FDC 趋势确认温升曲线与基线偏离自上月维护后开始；初步判定为热电偶松脱，已联系设备组更换。",
     }),
   ];
+  // 给已解决 + 必须上会=✓ 的预置 Issue 自动建 Report 并自动排期（演示决策 #7 自动排期）
+  store.issues.filter(i=>i.status==="已解决" && mustMeet(i)).forEach(i=>createAutoReport(i,true));
   // 给预置 issue 一条初始通知/事件
   pushNotif("审批经理", store.issues[0].id, `Issue ${store.issues[0].id}「${store.issues[0].title}」待你审批`, "待我审批");
   // 外部派单：通知工程师（owner）—— 跳过分诊，需实时拉回
   pushNotif("工程师", store.issues[2].id, `外部系统 MES 派单 ${store.issues[2].id}「${store.issues[2].title}」已分派到你名下`, "Issue 工作台");
+}
+
+/* 决策 #7 · 自动建 Report + 自动排期（在 Issue 转入 已解决 同事务调用）。
+   silent=true 用于 seed/批量初始化时不弹 toast、不重复推通知。 */
+function createAutoReport(iss, silent){
+  const rid="RPT-"+(++seq.report);
+  const m=findAutoMeeting(occurredAtOf(iss));
+  const r={ id:rid, issueId:iss.id, meetingId: m? m.id : null, status:"待汇报",
+            scheduledBy:"auto", conclusion:null };
+  store.reports.unshift(r); iss.reportIds.push(rid);
+  if(m){ if(!m.agenda.includes(rid)) m.agenda.push(rid);
+    ev(iss,"自动建汇报","系统",`生成 ${rid}，按发生时间自动排期：${meetingLabel(m)}`,true);
+  } else {
+    ev(iss,"自动建汇报","系统",`生成 ${rid}，无可用早会，落「待排期」`,true);
+  }
+  if(!silent){
+    pushNotif("会议主持人", rid, m? `新待汇报：${iss.title}（已自动排期至 ${meetingLabel(m)}）` : `新待汇报：${iss.title}（待排期）`, m? "待汇报清单" : "待排期");
+    toast(m? `已生成 ${rid} · 自动排期至 ${meetingLabel(m)}` : `已生成 ${rid} · 落「待排期」（无可用早会）`);
+  }
+  return r;
 }
 function mkIssue(site,title,hAgo,status,level,extra){
   const id = "ISS-"+(++seq.issue);
@@ -346,7 +436,10 @@ const derive = {
   overdue: ()=> store.issues.filter(i=> isOverdue(i) && !["已解决","已关闭"].includes(i.status)),
   escalated: ()=> store.issues.filter(i=> i.status==="审批中" && i.currentLevel>=2),
   myApprovals: ()=> store.issues.filter(i=> i.status==="审批中"),
-  pendingReports: ()=> store.reports.filter(r=> r.status==="待汇报"),
+  // 决策 #7 派生视图：待汇报清单 = 已挂会议；待排期 = 无会议（自动排期未命中）
+  scheduledReports: ()=> store.reports.filter(r=> r.status==="待汇报" && r.meetingId),
+  unscheduledReports: ()=> store.reports.filter(r=> r.status==="待汇报" && !r.meetingId),
+  pendingReports: ()=> store.reports.filter(r=> r.status==="待汇报"),  // 兼容旧调用：全部待汇报
   agendaOf: (mid)=> store.reports.filter(r=> r.meetingId===mid),
   unread: (role)=> store.notifications.filter(n=> (role? n.role===role : true) && !n.read),
 };
@@ -357,10 +450,10 @@ function hoursLeft(i){ return Math.round(RULES.SLA_HOURS - (CLOCK - i.createdAt)
    角色 → 时刻视图 映射
    ============================================================ */
 const NAV = {
-  "工程师":   [["分诊收件箱","🗂"],["Issue 工作台","🛠"]],
-  "审批经理": [["待我审批","✅"]],
-  "汇报人":   [["待汇报清单","📋"],["会议议程","📅"]],
-  "管理员":   [["接入健康","🩺"]],
+  "工程师":     [["分诊收件箱","🗂"],["Issue 工作台","🛠"]],
+  "审批经理":   [["待我审批","✅"]],
+  "会议主持人": [["待汇报清单","📋"],["待排期","⏳"],["会议议程","📅"],["会议管理","🗓"]],
+  "管理员":     [["接入健康","🩺"]],
 };
 const CROSS = [["通知中心","🔔"]];
 const TIER1 = [["Issue 全表","📊"]];   // Tier-1 通用实体表（浏览/检索，跨角色）
@@ -380,7 +473,11 @@ function renderNav(){
   const nav=document.getElementById("nav");
   let h = `<div class="navgroup"><div class="navlabel">${store.role} · 时刻</div>`;
   NAV[store.role].forEach(([v,ic])=>{
-    h += navItem(v,ic, v==="待我审批"? derive.myApprovals().length : (v==="待汇报清单"? derive.pendingReports().length : 0));
+    const badge = v==="待我审批" ? derive.myApprovals().length
+                : v==="待汇报清单" ? derive.scheduledReports().length
+                : v==="待排期" ? derive.unscheduledReports().length
+                : 0;
+    h += navItem(v,ic, badge);
   });
   h += `</div><div class="navgroup"><div class="navlabel">跨角色</div>`;
   CROSS.forEach(([v,ic])=> h += navItem(v,ic, derive.unread(store.role).length));
@@ -395,7 +492,8 @@ function navItem(v,ic,badge){
 }
 function renderTop(){
   const sub = { "分诊收件箱":"工程师 · 入口时刻","Issue 工作台":"工程师 · 推进时刻","待我审批":"审批经理 · 轮到我",
-    "待汇报清单":"汇报人 · 会前","会议议程":"汇报人 · 会中","接入健康":"管理员 · 入口","通知中心":"跨角色 · 早间",
+    "待汇报清单":"会议主持人 · 会前","待排期":"会议主持人 · 待排期（派生视图）","会议议程":"会议主持人 · 会中","会议管理":"会议主持人 · Tier-1 CRUD",
+    "接入健康":"管理员 · 入口","通知中心":"跨角色 · 早间",
     "Issue 全表":"Tier-1 · 全量浏览（只读为主）", "Issue 详情页":"Tier-1 · 实体详情（全量展开）" }[store.view]||"";
   document.getElementById("crumb").innerHTML = `${store.view} <small>${sub} · ${clockLabel()}</small>`;
 }
@@ -485,12 +583,12 @@ VIEWS["Issue 工作台"] = ()=>{
   }).join("");
   return `
     <div class="pagehead"><h1>Issue 工作台</h1><p>我名下的 Issue，按「需我动作 / 即将超时」自动置顶。每条只暴露当前状态下的<b>那一个</b>主动作。</p></div>
-    <div class="hint"><b>必须上会</b>（紫标 · 派生 = Kanban ∧ 子批∈{A,AA,AE} ∧ (主控图=KIP ∨ ACP+风险≥中)）须走汇报上会才能关闭；<b>非必须上会</b>在「已解决」时主动作变为 <b>关闭</b>，上会可选。在详情抽屉「概览」可改 Kanban / Risk 因子（必填理由）；子批与主控图是上游事实，只读。</div>
+    <div class="hint"><b>必须上会</b>（紫标 · 派生 = Kanban ∧ 子批∈{A,AA,AE} ∧ (主控图=KIP ∨ ACP+风险≥中)）：审批通过自动进「已解决」+ 自动建汇报 + 自动排期，上会·成功后自动关闭。<b>非必须上会</b>：审批通过<b>直接关闭</b>，跳过已解决（无"标记解决/直关"按钮）。在详情抽屉「概览」可改 Kanban / Risk 因子（必填理由）。</div>
     <div class="toolbar"><div class="tabs">${tab("全部")}${tab("必须上会")}${tab("Kanban")}${tab("超时")}${tab("已升级")}</div>
       <label class="muted" style="font-size:12.5px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:8px"><input type="checkbox" ${wbIncludeClosed?'checked':''} onchange="wbIncludeClosed=this.checked;wbTab='全部';render()"> 含已关闭</label></div>
     <div class="card">${list.length? rows : `<div class="empty">该分类下暂无 Issue</div>`}</div>`;
 };
-function statusTag(s){ const m={"处理中":"t-info","审批中":"t-purple","已批准":"t-brand","已解决":"t-ok","已关闭":"t-gray"}; return `<span class="tag ${m[s]||'t-gray'}">${s}</span>`; }
+function statusTag(s){ const m={"处理中":"t-info","审批中":"t-purple","已解决":"t-ok","已关闭":"t-gray"}; return `<span class="tag ${m[s]||'t-gray'}">${s}</span>`; }
 /* 决策 #9 派生层：必须上会 = f(Kanban, risk, subType, chartLevel)。无独立状态，无独立 override。 */
 function mustMeet(i){ return RULES.mustGoToMeeting(i); }
 function mustMeetWhy(i){
@@ -532,26 +630,27 @@ function activeReportOf(i){
 function reportBadgeInline(r){
   if(!r) return "";
   if(r.meetingId){ const m=meetingById(r.meetingId);
-    return `<span class="tag t-info" title="${r.id} · ${m?m.date:''}">排：${m?m.title:r.meetingId}</span>`;
+    const auto = r.scheduledBy==="auto" ? " · 自动" : " · 人工";
+    return `<span class="tag t-info" title="${r.id} · ${m?meetingLabel(m):''}${auto}">排：${m?m.title:r.meetingId}${auto}</span>`;
   }
-  return `<span class="tag t-gray" title="${r.id} · 已发起，等汇报人选会">等汇报人排期</span>`;
+  return `<span class="tag t-gray" title="${r.id} · 自动排期未命中，等主持人手动排">待排期</span>`;
 }
 function reportHintSub(i){
-  // 非必须上会主动作仍是「关闭」，已发起汇报时在 sub 里挂个小字提示，避免重复点
-  if(i.status!=="已解决" || mustMeet(i)) return "";
+  // 已解决只在 必须上会=✓ 路径出现；这里在 sub 行内挂个汇报进度小字，避免主动作和 sub 都说同一件事
+  if(i.status!=="已解决") return "";
   const r=activeReportOf(i); if(!r) return "";
   return r.meetingId
-    ? ` · 已发起汇报 ${r.id} · 排：${meetingById(r.meetingId)?.title||""}`
-    : ` · 已发起汇报 ${r.id} · 等汇报人排期`;
+    ? ` · 已建汇报 ${r.id} · 排：${meetingLabel(meetingById(r.meetingId))}`
+    : ` · 已建汇报 ${r.id} · 等主持人排期`;
 }
 function primaryAction(i){
   if(i.status==="处理中") return `<button class="btn primary sm" onclick="submitApproval('${i.id}')">提交审批</button>`;
   if(i.status==="审批中") return `<span class="tag t-purple">等待 ${i.approvalChain[i.currentLevel-1]?.role||""} 审批</span>`;
-  if(i.status==="已批准") return `<button class="btn ok sm" onclick="resolveIssue('${i.id}')">标记解决</button>`;
   if(i.status==="已解决"){
+    /* 决策 #9 · 已解决 是"等上会"相位，只在 必须上会=✓ 路径出现。
+       自动建 Report + 自动排期已在 approve 时同事务完成，不再需要"标记解决"或"发起汇报"按钮。 */
     const r=activeReportOf(i);
-    if(mustMeet(i)) return r ? reportBadgeInline(r) : `<button class="btn sm" onclick="createReport('${i.id}')">发起汇报</button>`;
-    return `<button class="btn ok sm" onclick="closeIssue('${i.id}')">关闭</button>`;
+    return r ? reportBadgeInline(r) : `<span class="tag t-gray">等汇报排期</span>`;
   }
   return "";
 }
@@ -630,20 +729,11 @@ function doEditDiagnosis(id, firstFill){
     if(store.view!=="Issue 详情页") openIssue(id);
   }
 }
-function resolveIssue(id){
-  const i=issueById(id); i.status="已解决"; i.pinned=false;
-  ev(i,"标记解决","你","工程师确认问题已解决",true);
-  toast(mustMeet(i)? "已标记解决 → 必须上会，须发起汇报" : "已标记解决 → 非必须上会，可一键关闭");
-  render();
-}
-function closeIssue(id){
-  const i=issueById(id);
-  if(mustMeet(i)){ toast("必须上会 · 须走汇报上会才能关闭"); return; }
-  i.status="已关闭"; i.pinned=false;
-  ev(i,"直接关闭","你","非必须上会：工程师确认结案，未上会",true);
-  toast("已关闭 → 在工作台「含已关闭」开关里可回看");
-  render();
-}
+/* 决策 #4 / #9 · 新状态机不再有"标记解决"与"工程师直关"按钮：
+   - 审批通过自动推进（approve 末态分叉）；
+   - 已解决 是 ✓ 路径的"等上会"相位，由 上会·成功 / 级联自动关闭驱动到 已关闭；
+   - ✗ 路径在 审批中 直接跳 已关闭，跳过 已解决。
+   原 resolveIssue / closeIssue 已删除（无入口）。 */
 
 /* ---- Issue 详情：抽屉(裁剪+分页签) 与 整页(全量) 共用同一组区块渲染器 ----
    关键纪律：一份内容、两种载体。区块渲染器是唯一真相；抽屉裁剪+分页签服务"推进"，
@@ -692,7 +782,7 @@ function secMeta(i){
 }
 function secChain(i){
   const chain=i.approvalChain.map(c=>{
-    const done=i.status!=="审批中"? (i.status==="已批准"||i.status==="已解决"||i.status==="已关闭") : c.level<i.currentLevel;
+    const done=i.status!=="审批中"? (i.status==="已解决"||i.status==="已关闭") : c.level<i.currentLevel;
     const cur=i.status==="审批中"&&c.level===i.currentLevel;
     return `<span class="node ${done?'done':''} ${cur?'cur':''}">${c.role}·${c.name}${done?' ✓':cur?' …':''}</span>`;
   }).join('<span class="arr">→</span>');
@@ -722,7 +812,11 @@ function secAttachments(i){
 }
 function secReports(i){
   return i.reportIds.map(rid=>reportById(rid)).filter(Boolean)
-    .map(r=>`<div class="kv"><b>汇报</b><span>${r.id} · ${reportStatusTag(r.status)} · ${r.meetingId? meetingById(r.meetingId).title : "未排期"}</span></div>`).join("")
+    .map(r=>{
+      const m = r.meetingId? meetingById(r.meetingId) : null;
+      const sched = r.scheduledBy==="auto" ? "自动" : r.scheduledBy==="manual" ? "人工" : "—";
+      return `<div class="kv"><b>汇报</b><span>${r.id} · ${reportStatusTag(r.status)} · ${m? meetingLabel(m) : "待排期"} <span class="muted" style="font-size:12px">· 排期方式：${sched}</span></span></div>`;
+    }).join("")
     || `<div class="muted" style="font-size:12.5px">暂无汇报</div>`;
 }
 function secTimeline(i){
@@ -781,17 +875,8 @@ function footFor(i){
          + `<button class="btn danger" onclick="rejectPrompt('${i.id}')">打回</button>`;
   } else {
     if(i.status==="处理中") btns=`<button class="btn primary" onclick="submitApproval('${i.id}');openIssue('${i.id}')">提交审批</button>`;
-    if(i.status==="已批准") btns=`<button class="btn ok" onclick="resolveIssue('${i.id}');openIssue('${i.id}')">标记解决</button>`;
-    if(i.status==="已解决"){
-      const r=activeReportOf(i);
-      if(mustMeet(i)){
-        // 有活跃 Report 时不再放按钮（防重复发起）；进度看抽屉里的「汇报记录」区块
-        btns = r ? "" : `<button class="btn" onclick="createReport('${i.id}');closeDrawer()">发起汇报</button>`;
-      } else {
-        btns = `<button class="btn ok" onclick="closeIssue('${i.id}');closeDrawer()">关闭</button>`
-          + (r ? "" : `<button class="btn ghost" onclick="createReport('${i.id}');closeDrawer()">发起汇报（可选）</button>`);
-      }
-    }
+    /* 决策 #4 / #9 · 已解决 是 ✓ 路径的"等上会"相位，无主动作（自动建汇报 + 自动排期 + 上会成功自动关）。
+       审批中由审批经理在批准弹窗里走；✗ 路径不进 已解决，已关闭也无主动作。 */
   }
   return btns
     + `<button class="btn ghost" onclick="openIssuePage('${i.id}')" title="整页可收藏/分享/打印">⤢ 展开为整页</button>`
@@ -860,7 +945,7 @@ VIEWS["待我审批"] = ()=>{
   }).join("");
   return `
     <div class="pagehead"><h1>待我审批</h1><p>被「工程师提交审批」卷入。多级审批不是多状态——同一个「审批中」+ <code>current_level</code> 游标逐级推进。</p></div>
-    <div class="hint">演示：点 <b>打回</b> → Issue 回「处理中」并在工程师工作台<b>置顶</b>、工程师收到通知；点 <b>批准</b> → 游标 +1，到顶则「已批准」。</div>
+    <div class="hint">演示：点 <b>打回</b> → Issue 回「处理中」并在工程师工作台<b>置顶</b>、工程师收到通知；点 <b>批准</b> → 游标 +1，到顶则<b>自动推进</b>：必须上会=✓ 进「已解决」+ 自动建汇报 + 自动排期；必须上会=✗ 直接「已关闭」。</div>
     <div class="card">${list.length? rows : `<div class="empty">没有待你审批的 Issue</div>`}</div>`;
 };
 /* 决策 #5 补 · 批准可选 comment / 打回必填意见：都进 approve/reject 决策事件 body，不新增字段、不新增视图。
@@ -887,9 +972,28 @@ function approve(id, comment){
   const cmt = (comment||"").trim();
   const cmtSuffix = cmt ? `；意见：${cmt}` : "";
   ev(i,"审批通过",cur.name,`${cur.role} 批准（第 ${i.currentLevel} 级）${cmtSuffix}`,true);
-  if(i.currentLevel < i.approvalChain.length){ i.currentLevel++; toast(`已批准 → 上交 ${i.approvalChain[i.currentLevel-1].role}`); }
-  else { i.status="已批准"; ev(i,"审批完成","系统","全部层级通过，进入已批准",true);
-    pushNotif("工程师",id,`Issue ${id} 审批通过，请标记解决`,"Issue 工作台"); toast("审批链走完 → Issue 已批准，已通知工程师"); }
+  if(i.currentLevel < i.approvalChain.length){
+    i.currentLevel++;
+    toast(`已批准 → 上交 ${i.approvalChain[i.currentLevel-1].role}`);
+  } else {
+    /* 决策 #4 / #9 · 审批通过自动推进：
+       - 必须上会=✓ → 已解决（"等上会"相位）+ 同事务自动建 Report 并自动排期
+       - 必须上会=✗ → 直接 已关闭（跳过 已解决，0 时长不立持久态） */
+    if(mustMeet(i)){
+      i.status="已解决";
+      ev(i,"审批完成","系统","全部层级通过，自动进入「已解决」（等上会相位）",true);
+      const r=createAutoReport(i,true);
+      const tail = r.meetingId ? `· 自动排期至 ${meetingLabel(meetingById(r.meetingId))}` : "· 自动排期未命中，落「待排期」";
+      pushNotif("工程师",id,`Issue ${id} 审批通过 · 已解决（等上会）${tail}`,"Issue 工作台");
+      pushNotif("会议主持人",r.id, r.meetingId? `新待汇报：${i.title}（自动排期 ${meetingLabel(meetingById(r.meetingId))}）` : `新待汇报：${i.title}（待排期）`, r.meetingId? "待汇报清单":"待排期");
+      toast(`审批链走完 → 已解决 + 自动建汇报 ${r.id} ${tail}`);
+    } else {
+      i.status="已关闭";
+      ev(i,"审批完成","系统","全部层级通过，必须上会=✗ · 自动直关（决策 #9）",true);
+      pushNotif("工程师",id,`Issue ${id} 审批通过 · 已自动关闭（非必须上会）`,"Issue 工作台");
+      toast("审批链走完 → Issue 已关闭（非必须上会，自动直关）");
+    }
+  }
   render();
 }
 function rejectPrompt(id){
@@ -911,13 +1015,33 @@ function doReject(id){
 }
 
 /* ---- 因子层覆盖（决策 #9）：Kanban / Risk，owner + 审批经理可改、必填理由、落决策事件 ----
-   级联：任一覆盖导致「必须上会」由 ✓ → ✗，且已有待汇报 Report → 自动移出（保留历史）。 */
+   级联（✓→✗ 翻转时）：
+   1) 已有「待汇报」Report → 自动移出（保留历史·meeting.agenda 同步清理）
+   2) Issue 在「已解决」（等上会相位） → 自动关闭——已解决在 ✗ 路径无合法去处，
+      不弹"确认关闭"：因子翻转本就必填理由、问责已落人，与"自动推进"哲学一致。 */
 function purgePendingReportsIfDropped(i){
   let removed=0;
   i.reportIds.forEach(rid=>{ const r=reportById(rid); if(r && r.status==="待汇报"){ r.status="移出"; removed++; }});
   store.reports = store.reports.filter(r=>r.status!=="移出");
   store.meetings.forEach(m=>{ m.agenda = m.agenda.filter(rid=>reportById(rid)); });
   return removed;
+}
+function cascadeOnMustDrop(i){
+  const removed = purgePendingReportsIfDropped(i);
+  let autoClosed=false;
+  if(i.status==="已解决"){
+    i.status="已关闭";
+    ev(i,"自动关闭","系统","必须上会 ✓→✗ 翻转：已解决 在 ✗ 路径无合法去处，自动直关（决策 #9 级联）",true);
+    autoClosed=true;
+  }
+  return { removed, autoClosed };
+}
+function cascadeNote(c){
+  if(!c.removed && !c.autoClosed) return "";
+  const parts=[];
+  if(c.removed) parts.push(`移出 ${c.removed} 条待汇报`);
+  if(c.autoClosed) parts.push("Issue 自动关闭");
+  return `（必须上会翻为 ✗ · ${parts.join(' · ')}）`;
 }
 function toggleKanbanPrompt(id){
   const i=issueById(id); const becoming=!i.kanban;
@@ -936,10 +1060,10 @@ function doToggleKanban(id){
   i.kanban=becoming;
   i.kanbanOverride={ value:becoming, reason:txt, by:store.role, at:tsNow() };
   ev(i,"Kanban 变更",store.role,`${becoming?'标为':'取消'} Kanban：${txt}（必须上会 ${wasMust?'✓':'✗'}→${mustMeet(i)?'✓':'✗'}）`,true);
-  let removed=0;
-  if(wasMust && !mustMeet(i)) removed = purgePendingReportsIfDropped(i);
+  let c={removed:0,autoClosed:false};
+  if(wasMust && !mustMeet(i)) c = cascadeOnMustDrop(i);
   closeDrawer();
-  toast(`已${becoming?'标为':'取消'} Kanban${removed?`（必须上会翻为 ✗ · 移出 ${removed} 条待汇报）`:''}`);
+  toast(`已${becoming?'标为':'取消'} Kanban${cascadeNote(c)}`);
   render();
   if(store.view!=="Issue 详情页") openIssue(id);
 }
@@ -965,80 +1089,412 @@ function doToggleRisk(id){
   i.risk=v;
   i.riskOverride={ value:v, reason:txt, by:store.role, at:tsNow() };
   ev(i,"风险变更",store.role,`改风险为 ${v}：${txt}（必须上会 ${wasMust?'✓':'✗'}→${mustMeet(i)?'✓':'✗'}）`,true);
-  let removed=0;
-  if(wasMust && !mustMeet(i)) removed = purgePendingReportsIfDropped(i);
+  let c={removed:0,autoClosed:false};
+  if(wasMust && !mustMeet(i)) c = cascadeOnMustDrop(i);
   closeDrawer();
-  toast(`已改风险 → ${v}${removed?`（必须上会翻为 ✗ · 移出 ${removed} 条待汇报）`:''}`);
+  toast(`已改风险 → ${v}${cascadeNote(c)}`);
   render();
   if(store.view!=="Issue 详情页") openIssue(id);
 }
 
-/* ---- 5. 待汇报清单（汇报人·会前 · 派生看板） ---- */
-function createReport(issueId){
-  const i=issueById(issueId);
-  const rid="RPT-"+(++seq.report);
-  const r={ id:rid, issueId, meetingId:null, status:"待汇报", conclusion:null };
-  store.reports.unshift(r); i.reportIds.push(rid);
-  ev(i,"发起汇报","你",`生成汇报记录 ${rid}（待排期上会）`,true);
-  pushNotif("汇报人",rid,`新待汇报：${i.title}`,"待汇报清单");
-  toast(`已生成 ${rid} → 见汇报人「待汇报清单」`); render();
-}
+/* ---- 5. 待汇报清单（会议主持人·会前 · 派生看板）：已自动排期、等开会 ---- */
 VIEWS["待汇报清单"] = ()=>{
-  const list=derive.pendingReports();
-  const opts=store.meetings.filter(m=>m.status==="待召开").map(m=>`<option value="${m.id}">${m.title}</option>`).join("");
+  const list=derive.scheduledReports();
+  // 按会议聚合
+  const byMeeting={};
+  list.forEach(r=>{ (byMeeting[r.meetingId]=byMeeting[r.meetingId]||[]).push(r); });
+  const sortedMids = Object.keys(byMeeting).sort((a,b)=>{
+    const ma=meetingById(a), mb=meetingById(b);
+    return +ma.date - +mb.date || (ma.type==="早会"?-1:1);
+  });
+  const groups = sortedMids.map(mid=>{
+    const m=meetingById(mid); const rs=byMeeting[mid];
+    const rows = rs.map(r=>{ const i=issueById(r.issueId);
+      const auto = r.scheduledBy==="auto" ? '<span class="tag t-gray">自动排期</span>' : '<span class="tag t-brand">人工排期</span>';
+      return `<div class="row">
+        <div class="grow"><div class="title">${i.title} ${reportStatusTag(r.status)} ${auto}</div>
+          <div class="sub">${r.id} · 关联 ${i.id} · ${i.site} · 负责人 ${i.owner}</div></div>
+        <div class="actions">
+          <select class="fld" style="width:200px" id="mt-${r.id}">${meetingOptsFor(r.meetingId)}</select>
+          <button class="btn sm" onclick="rescheduleReport('${r.id}')">重排</button>
+        </div></div>`;
+    }).join("");
+    return `<div class="sec">${meetingLabel(m)} · ${m.title}<span class="muted" style="font-size:12px;margin-left:8px">${rs.length} 条</span></div>
+            <div class="card">${rows}</div>`;
+  }).join("");
+  return `
+    <div class="pagehead"><h1>待汇报清单</h1>
+      <p>会议主持人 · 会前：所有<b>已自动排期</b>的 Report。按目标会议聚合，可手动重排到别会。</p></div>
+    <div class="hint">演示：审批通过的「必须上会」Issue 自动建 Report、按 occurredAt + 13:00 规则排到目标早会。无可用早会则进「待排期」。重排=新建 Report、旧标 <b>需重排</b>（决策 #7）。</div>
+    ${list.length? groups : `<div class="empty">暂无已排期待汇报 Report。新解决的 Issue 会按规则自动落入。</div>`}`;
+};
+function meetingOptsFor(currentMid){
+  return store.meetings
+    .filter(m=>m.status==="待召开")
+    .sort((a,b)=>+a.date - +b.date || (a.type==="早会"?-1:1))
+    .map(m=>`<option value="${m.id}" ${m.id===currentMid?'selected':''}>${meetingLabel(m)}</option>`)
+    .join("");
+}
+function reportStatusTag(s){
+  const m={"成功":"t-ok","需重排":"t-warn","驳回":"t-danger","移出":"t-gray"};
+  return `<span class="tag ${m[s]||'t-info'}">${s}</span>`;
+}
+function rescheduleReport(rid){
+  // 决策 #7：任何排期挪动都算重排——新建 Report、旧 Report 标"需重排"；必填理由
+  const r=reportById(rid); const sel=document.getElementById("mt-"+rid); const newMid=sel.value;
+  if(newMid===r.meetingId){ toast("会议未变化"); return; }
+  const i=issueById(r.issueId);
+  const oldM = r.meetingId? meetingById(r.meetingId) : null;
+  const newM = meetingById(newMid);
+  drawer("重排（新建 Report，旧标需重排）", i.id+" · "+i.title, `
+    <div class="kv"><b>原排期</b><span>${oldM? meetingLabel(oldM):'—'}</span></div>
+    <div class="kv"><b>新排期</b><span>${meetingLabel(newM)}</span></div>
+    <div class="prose" style="margin-top:8px">决策 #7：任何挪动都算重排——新建 Report、旧 ${rid} 标 <b>需重排</b>。一致性 &gt; 便利性："本来早上要讲、临时挪晚上"也是有意义的历史。</div>
+    <div class="sec">重排理由（必填 · 落决策事件）</div>
+    <textarea id="rsReason" rows="4" placeholder="例：早会议程已满，挪到当日晚会"></textarea>
+  `, `<button class="btn primary" onclick="doReschedule('${rid}','${newMid}')">确认重排</button><button class="btn ghost" onclick="closeDrawer()">取消</button>`);
+}
+function doReschedule(rid,newMid){
+  const txt=(document.getElementById("rsReason").value||"").trim();
+  if(!txt){ toast("请填写重排理由"); return; }
+  const r=reportById(rid); const i=issueById(r.issueId);
+  const oldM = r.meetingId? meetingById(r.meetingId) : null;
+  const newM = meetingById(newMid);
+  // 旧 Report：标需重排（保留历史）；从 meeting.agenda 移除
+  r.status="需重排"; r.conclusion=`手动重排：${txt}`;
+  if(oldM) oldM.agenda = oldM.agenda.filter(x=>x!==rid);
+  // 新 Report：手动排期
+  const nid="RPT-"+(++seq.report);
+  store.reports.unshift({ id:nid, issueId:i.id, meetingId:newMid, status:"待汇报", scheduledBy:"manual", conclusion:null });
+  i.reportIds.push(nid);
+  if(!newM.agenda.includes(nid)) newM.agenda.push(nid);
+  ev(i,"汇报重排",store.role,`${oldM? meetingLabel(oldM):'待排期'} → ${meetingLabel(newM)}；旧 ${rid} 标需重排；新建 ${nid}（手动）；理由：${txt}`,true);
+  closeDrawer();
+  toast(`已重排：${oldM? meetingLabel(oldM):'待排期'} → ${meetingLabel(newM)}（新 ${nid}）`);
+  render();
+}
+
+/* ---- 5b. 待排期（派生视图：Report.meetingId is null）---- */
+VIEWS["待排期"] = ()=>{
+  const list=derive.unscheduledReports();
   const rows=list.map(r=>{ const i=issueById(r.issueId);
     return `<div class="row">
-      <div class="grow"><div class="title">${i.title} ${reportStatusTag(r.status)}</div>
-        <div class="sub">${r.id} · 关联 ${i.id} · ${i.site} · 负责人 ${i.owner}</div></div>
+      <div class="grow"><div class="title">${i.title} ${reportStatusTag(r.status)} <span class="tag t-warn">待排期</span></div>
+        <div class="sub">${r.id} · 关联 ${i.id} · ${i.site} · 负责人 ${i.owner} · 发生时间 ${fmtYMD(occurredAtOf(i))} ${String(occurredAtOf(i).getHours()).padStart(2,"0")}:${String(occurredAtOf(i).getMinutes()).padStart(2,"0")}</div></div>
       <div class="actions">
-        <select class="fld" style="width:170px" id="mt-${r.id}">${opts}</select>
-        <button class="btn primary sm" onclick="confirmToMeeting('${r.id}')">确认上会</button>
-        <button class="btn ghost sm" onclick="dropReport('${r.id}')">移出</button>
+        <select class="fld" style="width:200px" id="mt-${r.id}">${meetingOptsFor(null)}</select>
+        <button class="btn primary sm" onclick="assignFromWaiting('${r.id}')">排期</button>
       </div></div>`;
   }).join("");
   return `
-    <div class="pagehead"><h1>待汇报清单</h1><p>Meeting↔Report 上的派生看板。把待汇报 Issue 排进某场会议的议程。</p></div>
-    <div class="hint">演示：选一场会议点 <b>确认上会</b> → 该条进入「会议议程」；会中记「需重排」会<b>新建</b>一条 Report（旧的保留，历史不可变）。</div>
-    <div class="card">${list.length? rows : `<div class="empty">没有待汇报的 Issue。可在「Issue 工作台」对已解决的 Issue 点「发起汇报」。</div>`}</div>`;
+    <div class="pagehead"><h1>待排期</h1>
+      <p>会议主持人 · 派生视图（决策 #7/#8）：自动排期未命中的 Report 落这里。挑一场会议点「排期」。</p></div>
+    <div class="hint">触发条件：目标早会不存在 / 已开过 / 顺延后仍无可用早会。手动排期不算重排（首次挂会），<b>scheduledBy 标 manual</b>，落审计。</div>
+    <div class="card">${list.length? rows : `<div class="empty">无待排期 Report 🎉</div>`}</div>`;
 };
-function reportStatusTag(s){ return `<span class="tag ${s==='成功'?'t-ok':s==='需重排'?'t-warn':'t-info'}">${s}</span>`; }
-function confirmToMeeting(rid){ const r=reportById(rid); const sel=document.getElementById("mt-"+rid); const mid=sel.value;
-  r.meetingId=mid; const m=meetingById(mid); if(!m.agenda.includes(rid)) m.agenda.push(rid);
-  toast(`已排入「${m.title}」→ 见会议议程`); render();
+function assignFromWaiting(rid){
+  // 首次从「待排期」挂会议：不算重排（这只是 Report 第一次被挂会），但 scheduledBy=manual
+  const r=reportById(rid); const sel=document.getElementById("mt-"+rid); const mid=sel.value;
+  const i=issueById(r.issueId); const m=meetingById(mid);
+  r.meetingId=mid; r.scheduledBy="manual";
+  if(!m.agenda.includes(rid)) m.agenda.push(rid);
+  ev(i,"手动排期",store.role,`${rid} 从「待排期」挂入 ${meetingLabel(m)}（首次挂会，不算重排）`,true);
+  toast(`已挂入 ${meetingLabel(m)}`);
+  render();
 }
-function dropReport(rid){ const r=reportById(rid); r.status="移出"; store.reports=store.reports.filter(x=>x.id!==rid); toast("已移出待汇报"); render(); }
 
-/* ---- 6. 会议议程（汇报人·会中） ---- */
+/* ---- 6. 会议议程（会议主持人·会中）：成功 / 需重排 / 驳回 三结论 ---- */
+/* 议程结清自动收尾：会议剩余议程全无「待汇报」时，待召开 → 已开。
+   触发口径=刚对此会议某条 Report 做了结论，所以「从未挂过 Report 的空会议」不会跑到这里。 */
+function tryMarkMeetingDone(mid){
+  if(!mid) return;
+  const m=meetingById(mid);
+  if(!m || m.status!=="待召开") return;
+  const hasPending=m.agenda.some(rid=>{ const r=reportById(rid); return r && r.status==="待汇报"; });
+  if(!hasPending) m.status="已开";
+}
 let curMeeting=null;
+/* 议程行渲染——议程页与「会议管理」抽屉共用 */
+function agendaRowHtml(r){
+  const i=issueById(r.issueId);
+  return `<div class="row">
+    <div class="grow"><div class="title">${i.title} ${reportStatusTag(r.status)}</div>
+      <div class="sub">${r.id} · ${i.id} · ${i.site}${r.conclusion?` · 结论：${r.conclusion}`:""}</div></div>
+    <div class="actions">
+      ${r.status==="待汇报"? `<button class="btn ok sm" onclick="concludeReport('${r.id}','成功')">记：成功</button>
+        <button class="btn warn sm" onclick="concludePrompt('${r.id}','需重排')">记：需重排</button>
+        <button class="btn danger sm" onclick="concludePrompt('${r.id}','驳回')">记：驳回</button>` : `<span class="muted" style="font-size:12.5px">已记录</span>`}
+    </div></div>`;
+}
+function meetingStatusTag(m){
+  return m.status==="已开" ? '<span class="tag t-gray">已开</span>'
+       : m.status==="取消" ? '<span class="tag t-danger">取消</span>'
+       : '<span class="tag t-info">待召开</span>';
+}
 VIEWS["会议议程"] = ()=>{
-  if(!curMeeting) curMeeting=store.meetings[0].id;
-  const opts=store.meetings.map(m=>`<option value="${m.id}" ${curMeeting===m.id?'selected':''}>${m.title}</option>`).join("");
+  const today=todayDate();
+  const todayAM = store.meetings.find(mm=>+dateOnly(mm.date)===+today && mm.type==="早会");
+  const todayPM = store.meetings.find(mm=>+dateOnly(mm.date)===+today && mm.type==="晚会");
+  // 默认选今日早会；找不到就今日晚会；再不行就第一条
+  if(!curMeeting) curMeeting = (todayAM||todayPM||store.meetings[0])?.id;
+  const chip=(mm,label)=> mm
+    ? `<button class="tab ${curMeeting===mm.id?'active':''}" onclick="curMeeting='${mm.id}';render()">${label}${mm.status==='已开'?' · 已开':''}</button>`
+    : `<button class="tab" disabled title="今日尚无该会议" style="opacity:.5;cursor:not-allowed">${label} · 无</button>`;
+  const others=store.meetings
+    .filter(mm=>!(todayAM && mm.id===todayAM.id) && !(todayPM && mm.id===todayPM.id))
+    .sort((a,b)=>+a.date - +b.date || (a.type==="早会"?-1:1));
+  const otherSelected = curMeeting && !(todayAM && curMeeting===todayAM.id) && !(todayPM && curMeeting===todayPM.id);
+  const otherOpts=others.map(mm=>`<option value="${mm.id}" ${curMeeting===mm.id?'selected':''}>${meetingLabel(mm)} · ${mm.title}</option>`).join("");
+  const otherSel=`<select class="fld" style="width:280px" onchange="if(this.value)curMeeting=this.value;render()"><option value="" disabled hidden${otherSelected?'':' selected'}>其他会议…</option>${otherOpts}</select>`;
   const m=meetingById(curMeeting); const items=derive.agendaOf(curMeeting);
-  const rows=items.map(r=>{ const i=issueById(r.issueId);
-    return `<div class="row">
-      <div class="grow"><div class="title">${i.title} ${reportStatusTag(r.status)}</div>
-        <div class="sub">${r.id} · ${i.id} · ${i.site}${r.conclusion?` · 结论：${r.conclusion}`:""}</div></div>
-      <div class="actions">
-        ${r.status==="待汇报"? `<button class="btn ok sm" onclick="concludeReport('${r.id}','成功')">记：成功</button>
-          <button class="btn warn sm" onclick="concludeReport('${r.id}','需重排')">记：需重排</button>` : `<span class="muted" style="font-size:12.5px">已记录</span>`}
-      </div></div>`;
-  }).join("");
+  const rows=items.map(agendaRowHtml).join("");
   return `
-    <div class="pagehead"><h1>会议议程</h1><p>逐条过会，记录结论。成功→Issue 可关闭；需重排→新建待汇报 Report。</p></div>
-    <div class="toolbar"><select class="fld" style="width:280px" onchange="curMeeting=this.value;render()">${opts}</select>
-      <span class="tag t-gray">${m.date}</span></div>
-    <div class="card">${items.length? rows : `<div class="empty">该会议暂无议程。去「待汇报清单」确认上会。</div>`}</div>`;
+    <div class="pagehead"><h1>会议议程</h1>
+      <p>逐条过会，记结论。<b>成功</b>→Issue 自动关闭；<b>需重排</b>=时间问题→新建待汇报 Report；<b>驳回</b>=结论问题→Issue 退回处理中。</p></div>
+    <div class="toolbar"><div class="tabs">${chip(todayAM,"今日早会")}${chip(todayPM,"今日晚会")}</div>
+      ${otherSel}${meetingStatusTag(m)}
+      <span class="muted">${m.title}</span></div>
+    <div class="card">${items.length? rows : `<div class="empty">该会议暂无议程。去「待汇报清单」/「待排期」挂入。</div>`}</div>`;
 };
 function concludeReport(rid,outcome){
+  // 成功 = 无需理由（一键），需重排 / 驳回 走带理由的 concludePrompt
   const r=reportById(rid); const i=issueById(r.issueId);
-  if(outcome==="成功"){ r.status="成功"; r.conclusion="评审通过，结案"; i.status="已关闭"; ev(i,"汇报成功","汇报人","会议评审通过，Issue 关闭",true);
-    toast("已记成功 → Issue 关闭"); }
-  else { r.status="需重排"; r.conclusion="信息不足，需重排";
-    // 重排：新建 Report，旧记录保留
-    const nid="RPT-"+(++seq.report); store.reports.unshift({ id:nid, issueId:i.id, meetingId:null, status:"待汇报", conclusion:null });
-    i.reportIds.push(nid); ev(i,"汇报重排","汇报人",`旧汇报 ${rid} 标记需重排；新建 ${nid} 待重新排期`,true);
-    pushNotif("汇报人",nid,`「${i.title}」需重排，已生成新汇报 ${nid}`,"待汇报清单");
-    toast(`已记需重排 → 新建 ${nid}（旧记录保留）`); }
+  if(outcome==="成功"){
+    r.status="成功"; r.conclusion="评审通过，结案";
+    i.status="已关闭";
+    ev(i,"汇报成功","会议主持人","会议评审通过，Issue 自动关闭",true);
+    tryMarkMeetingDone(r.meetingId);
+    toast("已记成功 → Issue 自动关闭");
+    render();
+  }
+}
+function concludePrompt(rid,outcome){
+  const r=reportById(rid); const i=issueById(r.issueId);
+  const isReject = outcome==="驳回";
+  drawer(isReject?"记：驳回（评审会判结论不成立）":"记：需重排（议程时间问题）", i.id+" · "+i.title, `
+    <div class="prose">${isReject
+      ? '决策 #7：<b>驳回 ≠ 需重排</b>——驳回是结论问题（评审会判定结论不成立），Issue 从 已解决 退回 处理中，旧 Report 标驳回留作历史；复盘后重新走审批 → 新 Report。对称于审批驳回 `审批中→处理中`。'
+      : '需重排是时间问题（议程没排上 / 临时改期）——新建一条 Report 留待重新排期，旧 Report 标需重排留作历史。'}</div>
+    <div class="sec">${isReject?'驳回意见':'重排说明'}（必填 · 落决策事件）</div>
+    <textarea id="cReason" rows="4" placeholder="${isReject?'例：根因证据不足，要求工程师补 FDC 趋势对照后再报':'例：今日议程已超时，挪到明日早会'}"></textarea>
+  `, `<button class="btn ${isReject?'danger':'warn'}" onclick="doConclude('${rid}','${outcome}')">确认${isReject?'驳回':'需重排'}</button><button class="btn ghost" onclick="closeDrawer()">取消</button>`);
+}
+function doConclude(rid,outcome){
+  const txt=(document.getElementById("cReason").value||"").trim();
+  if(!txt){ toast("请填写理由"); return; }
+  const r=reportById(rid); const i=issueById(r.issueId);
+  if(outcome==="需重排"){
+    r.status="需重排"; r.conclusion=`需重排：${txt}`;
+    const oldMid=r.meetingId;
+    const oldM = oldMid? meetingById(oldMid) : null;
+    if(oldM) oldM.agenda = oldM.agenda.filter(x=>x!==rid);
+    const nid="RPT-"+(++seq.report);
+    store.reports.unshift({ id:nid, issueId:i.id, meetingId:null, status:"待汇报", scheduledBy:"manual", conclusion:null });
+    i.reportIds.push(nid);
+    ev(i,"汇报重排","会议主持人",`旧 ${rid} 标需重排（${txt}）；新建 ${nid} 待重新排期`,true);
+    pushNotif("会议主持人",nid,`「${i.title}」需重排，新建 ${nid} 待排期`,"待排期");
+    tryMarkMeetingDone(oldMid);
+    closeDrawer();
+    toast(`已记需重排 → 新建 ${nid}（旧记录保留）`);
+  } else if(outcome==="驳回"){
+    r.status="驳回"; r.conclusion=`驳回：${txt}`;
+    const oldMid=r.meetingId;
+    const oldM = oldMid? meetingById(oldMid) : null;
+    if(oldM) oldM.agenda = oldM.agenda.filter(x=>x!==rid);
+    /* 决策 #7 · 上会驳回内容：Issue 从 已解决 退回 处理中（对称于审批驳回）。
+       新 Report 待复盘 + 重新走审批 + 重新建 Report 时再生成；不在驳回当下预建。 */
+    i.status="处理中"; i.pinned=true;
+    ev(i,"上会驳回","会议主持人",`Report ${rid} 驳回：${txt}；Issue 从 已解决 退回 处理中`,true);
+    pushNotif("工程师",i.id,`Issue ${i.id} 被评审会驳回：${txt}（需复盘后重走审批）`,"Issue 工作台");
+    tryMarkMeetingDone(oldMid);
+    closeDrawer();
+    toast(`已记驳回 → Issue ${i.id} 退回处理中、工程师工作台置顶`);
+  }
+  render();
+}
+
+/* ---- 6b. 会议管理（会议主持人·Tier-1 CRUD）：月历主视图 + 列表 fallback ----
+   决策 #7：早/晚会系统自动滚动建；专题/其他可手动建；禁止删任何已挂 Report 的 Meeting。 */
+let mmFilter="未来";
+let mmViewMode="月历"; // 月历 | 列表
+let mmMonth=null;      // 月份锚（每月 1 号）
+function mmEnsureMonth(){
+  if(!mmMonth){ const t=todayDate(); mmMonth=new Date(t.getFullYear(),t.getMonth(),1); }
+}
+function mmShift(delta){
+  mmEnsureMonth();
+  mmMonth=new Date(mmMonth.getFullYear(),mmMonth.getMonth()+delta,1);
+  render();
+}
+function mmGoToday(){
+  const t=todayDate(); mmMonth=new Date(t.getFullYear(),t.getMonth(),1); render();
+}
+const _typeOrd = (t)=> t==="早会"?0 : t==="晚会"?1 : t==="专题"?2 : 3;
+const _typeShort = (t)=> t==="早会"?"早" : t==="晚会"?"晚" : t==="专题"?"专" : "他";
+function _meetingsOn(dstr){
+  return store.meetings.filter(m=>fmtYMD(m.date)===dstr)
+    .sort((a,b)=>_typeOrd(a.type)-_typeOrd(b.type));
+}
+
+VIEWS["会议管理"] = ()=>{
+  mmEnsureMonth();
+  const modeTabs = `<div class="tabs">
+    <button class="tab ${mmViewMode==='月历'?'active':''}" onclick="mmViewMode='月历';render()">月历</button>
+    <button class="tab ${mmViewMode==='列表'?'active':''}" onclick="mmViewMode='列表';render()">列表</button></div>`;
+  return mmViewMode==="月历" ? renderMmCalendar(modeTabs) : renderMmList(modeTabs);
+};
+
+function renderMmCalendar(modeTabs){
+  const today=todayDate();
+  const ym=`${mmMonth.getFullYear()}年${mmMonth.getMonth()+1}月`;
+  const first=new Date(mmMonth.getFullYear(),mmMonth.getMonth(),1);
+  const firstWd=(first.getDay()+6)%7; // 0=Mon
+  const daysInMonth=new Date(mmMonth.getFullYear(),mmMonth.getMonth()+1,0).getDate();
+  const cells=[];
+  for(let i=0;i<42;i++){
+    const dayNum=i-firstWd+1;
+    if(dayNum<1 || dayNum>daysInMonth){ cells.push(null); continue; }
+    const d=new Date(mmMonth.getFullYear(),mmMonth.getMonth(),dayNum);
+    const dstr=fmtYMD(d);
+    const isToday=+d===+today;
+    const meetings=_meetingsOn(dstr);
+    cells.push({ d, dstr, dayNum, isToday, meetings });
+  }
+  const weekHead=['一','二','三','四','五','六','日']
+    .map(w=>`<div style="font-size:12px;color:var(--ink2);text-align:center;padding:4px 0;font-weight:500">周${w}</div>`).join('');
+  const cellHtml=cells.map(c=>{
+    if(!c) return `<div style="background:#fafbfd;border-radius:6px;min-height:84px"></div>`;
+    const border=c.isToday?'border:2px solid #3b6fde;':'border:1px solid #e6e8ec;';
+    const badges=c.meetings.slice(0,4).map(m=>{
+      const tone=m.status==='已开'?'#9aa3b2':m.status==='取消'?'#e8665a':'#3b6fde';
+      return `<span style="display:inline-block;font-size:11px;padding:1px 5px;border-radius:3px;background:${tone}22;color:${tone};margin-right:3px;margin-bottom:2px">${_typeShort(m.type)}</span>`;
+    }).join('');
+    const more=c.meetings.length>4?`<span style="font-size:11px;color:var(--ink2)">+${c.meetings.length-4}</span>`:'';
+    return `<div onclick="openDayDrawer('${c.dstr}')" style="${border}border-radius:6px;padding:6px;min-height:84px;cursor:pointer;background:#fff">
+      <div style="font-size:12px;color:${c.isToday?'#3b6fde':'var(--ink2)'};font-weight:${c.isToday?'600':'400'}">${c.dayNum}${c.isToday?' · 今':''}</div>
+      <div style="margin-top:4px;line-height:1.4">${badges}${more}</div>
+    </div>`;
+  }).join('');
+  return `
+    <div class="pagehead"><h1>会议管理</h1>
+      <p>系统每天自动建周一至周六的早会 + 晚会（不存时分，团队共识）；可手动建专题/其他。已挂 Report 的不可删（决策 #7）。</p></div>
+    <div class="toolbar">
+      <button class="btn sm" onclick="mmShift(-1)">←</button>
+      <span style="font-weight:600;min-width:110px;text-align:center">${ym}</span>
+      <button class="btn sm" onclick="mmShift(1)">→</button>
+      <button class="btn sm" onclick="mmGoToday()">今</button>
+      <span style="flex:1"></span>
+      <button class="btn primary sm" onclick="createMeetingPrompt()">+ 建会议</button>
+      ${modeTabs}
+    </div>
+    <div class="card">
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px">${weekHead}${cellHtml}</div>
+      <div class="muted" style="font-size:12px;margin-top:10px">点格子查看当日会议 · <span style="color:#3b6fde">蓝=待召开</span> · <span style="color:#9aa3b2">灰=已开</span> · <span style="color:#e8665a">红=取消</span> · 早=早会 晚=晚会 专=专题 他=其他</div>
+    </div>`;
+}
+
+function renderMmList(modeTabs){
+  const today=todayDate();
+  let list=[...store.meetings].sort((a,b)=>+a.date - +b.date || _typeOrd(a.type)-_typeOrd(b.type));
+  if(mmFilter==="未来") list=list.filter(m=>+dateOnly(m.date) >= +today);
+  if(mmFilter==="历史") list=list.filter(m=>+dateOnly(m.date) <  +today);
+  const tab=(t)=>`<button class="tab ${mmFilter===t?'active':''}" onclick="mmFilter='${t}';render()">${t}</button>`;
+  const rows=list.map(m=>{
+    const agendaN=m.agenda.length;
+    const canDelete = agendaN===0 && m.status!=="已开";
+    const reason = m.status==="已开" ? "已开过的 Meeting 不可删（历史不可变）"
+                  : agendaN>0 ? `有 ${agendaN} 条 Report 已挂 · 禁止删（决策 #7）`
+                  : "可删";
+    return `<div class="row">
+      <div class="grow">
+        <div class="title">${meetingLabel(m)} · ${m.title} ${meetingStatusTag(m)}</div>
+        <div class="sub">${m.id} · 议程 ${agendaN} 条 · ${reason}</div>
+      </div>
+      <div class="actions">
+        <button class="btn sm" onclick="gotoAgenda('${m.id}')">查看议程</button>
+        ${m.status==="待召开" && agendaN===0 ? `<button class="btn warn sm" onclick="cancelMeeting('${m.id}')">取消</button>` : ""}
+        ${canDelete ? `<button class="btn danger sm" onclick="deleteMeeting('${m.id}')">删除</button>` : `<button class="btn sm" disabled title="${reason}">删除</button>`}
+      </div></div>`;
+  }).join("");
+  return `
+    <div class="pagehead"><h1>会议管理</h1>
+      <p>系统每天自动建周一至周六的早会 + 晚会（不存时分，团队共识）；可手动建专题/其他。已挂 Report 的不可删（决策 #7）。</p></div>
+    <div class="toolbar"><div class="tabs">${tab("未来")}${tab("历史")}${tab("全部")}</div>
+      <button class="btn primary sm" onclick="createMeetingPrompt()">+ 建会议</button>
+      <span class="muted">共 ${list.length} 条</span>
+      <span style="flex:1"></span>
+      ${modeTabs}</div>
+    <div class="card">${list.length? rows : `<div class="empty">该范围下无会议</div>`}</div>`;
+}
+
+function openDayDrawer(dstr){
+  const meetings=_meetingsOn(dstr);
+  const rows=meetings.map(m=>{
+    const agendaN=m.agenda.length;
+    const canDelete = agendaN===0 && m.status!=="已开";
+    const reason = m.status==="已开" ? "已开 · 不可删"
+                  : agendaN>0 ? `议程 ${agendaN} 条 · 不可删`
+                  : "可删";
+    return `<div class="row">
+      <div class="grow">
+        <div class="title">${m.type} · ${m.title} ${meetingStatusTag(m)}</div>
+        <div class="sub">${m.id} · 议程 ${agendaN} 条 · ${reason}</div>
+      </div>
+      <div class="actions">
+        <button class="btn sm" onclick="gotoAgenda('${m.id}')">查看议程</button>
+        ${m.status==="待召开" && agendaN===0 ? `<button class="btn warn sm" onclick="cancelMeeting('${m.id}');openDayDrawer('${dstr}')">取消</button>` : ""}
+        ${canDelete ? `<button class="btn danger sm" onclick="deleteMeeting('${m.id}');openDayDrawer('${dstr}')">删除</button>` : ""}
+      </div></div>`;
+  }).join('');
+  const body = meetings.length ? rows : `<div class="empty">该日暂无会议</div>`;
+  drawer(`${dstr} · ${weekdayZh(new Date(dstr+'T00:00:00'))}`,
+    `当日共 ${meetings.length} 个会议`,
+    body,
+    `<button class="btn primary" onclick="createMeetingPrompt('${dstr}')">+ 新建</button>
+     <button class="btn ghost" onclick="closeDrawer()">关闭</button>`);
+}
+function createMeetingPrompt(dateStr){
+  const todayStr=dateStr || fmtYMD(todayDate());
+  const opts=MEETING_TYPES.map(t=>`<option value="${t}">${t}</option>`).join("");
+  drawer("新建会议","由会议主持人手动创建", `
+    <div class="prose">早/晚会已被系统自动建（周一至周六）。手动建一般用于<b>专题/其他</b>类型。</div>
+    <div class="sec">日期（YYYY-MM-DD）</div>
+    <input class="fld" id="mDate" value="${todayStr}" style="width:200px">
+    <div class="sec">类型</div>
+    <select class="fld" id="mType" style="width:160px">${opts}</select>
+    <div class="sec">标题</div>
+    <input class="fld" id="mTitle" placeholder="例：CMP 专题复盘会" style="width:300px">
+  `, `<button class="btn primary" onclick="doCreateMeeting()">建</button><button class="btn ghost" onclick="closeDrawer()">取消</button>`);
+}
+function doCreateMeeting(){
+  const dStr=document.getElementById("mDate").value;
+  const type=document.getElementById("mType").value;
+  const title=(document.getElementById("mTitle").value||"").trim() || (weekdayZh(new Date(dStr))+" · "+type);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(dStr)){ toast("日期格式应为 YYYY-MM-DD"); return; }
+  const d=new Date(dStr+"T00:00:00");
+  const slot = type==="早会"?"AM": type==="晚会"?"PM": type==="专题"?"TPC":"OTH";
+  const id=`M-${slot}-${dStr}-${seq.event}`;
+  store.meetings.push({ id, date:d, type, status:"待召开", title, agenda:[] });
+  closeDrawer();
+  toast(`已建 ${id} · ${meetingLabel({date:d,type})} · ${title}`);
+  render();
+}
+function gotoAgenda(mid){
+  curMeeting=mid; store.view="会议议程"; closeDrawer(); render();
+}
+function cancelMeeting(mid){
+  const m=meetingById(mid);
+  if(m.agenda.length>0){ toast("有 Report 已挂 · 禁止取消"); return; }
+  m.status="取消";
+  toast(`已取消 ${m.title}`);
+  render();
+}
+function deleteMeeting(mid){
+  const m=meetingById(mid);
+  if(m.agenda.length>0){ toast("有 Report 已挂 · 禁止删（决策 #7）"); return; }
+  if(m.status==="已开"){ toast("已开过的 Meeting 不可删"); return; }
+  store.meetings = store.meetings.filter(x=>x.id!==mid);
+  toast(`已删除 ${m.title}`);
   render();
 }
 
@@ -1106,7 +1562,7 @@ VIEWS["Issue 全表"] = ()=>{
     const okQ = !q || [i.id,i.title,i.site,i.owner].some(x=>String(x).includes(q));
     return okS && okQ;
   });
-  const statuses=["全部","处理中","审批中","已批准","已解决","已关闭"];
+  const statuses=["全部","处理中","审批中","已解决","已关闭"];
   const sel = statuses.map(s=>`<option ${tblStatus===s?'selected':''}>${s}</option>`).join("");
   const rows = list.map(i=>{
     const od=isOverdue(i); const hl=hoursLeft(i);

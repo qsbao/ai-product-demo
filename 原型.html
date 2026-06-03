@@ -293,6 +293,8 @@ function seed(){
     view: "分诊收件箱",
     detailIssueId: null,   // 当前整页详情查看的 Issue
     detailReturn: null,    // 从哪个视图进入整页（返回用）
+    drawerIssueId: null,   // 抽屉当前显示的 Issue（用于异步动作后同步重绘抽屉）
+    drawerTab: null,       // 抽屉当前 tab
     alarms: [
       a("Fab2-CMP","研磨头压力越限","high",-2),
       a("Fab2-CMP","研磨头压力越限","high",-2),       // 同站同类→可聚合
@@ -431,7 +433,11 @@ function retryReportDoc(issueId){
   const iss = issueById(issueId); if(!iss) return;
   const fail = Math.random() < 0.2;
   mockExternalCreateReportDoc(iss, false, fail, "manual-retry");
-  paint();
+  render();
+  // 抽屉/详情页是独立 DOM 区域；render() 只重绘 main，需要在这里同步重绘抽屉
+  if(store.drawerIssueId===issueId && document.getElementById("drawer").classList.contains("open")){
+    openIssue(issueId, store.drawerTab || "概览");
+  }
 }
 function mkIssue(site,title,hAgo,status,level,extra){
   const id = "ISS-"+(++seq.issue);
@@ -938,6 +944,7 @@ function secDiagnosis(i){
 function openIssue(id, tab){
   const i=issueById(id); if(!i) return;
   tab = tab || "概览";
+  store.drawerIssueId = id; store.drawerTab = tab;
   const TABS=["概览","事件","关联"];
   const tabBar=TABS.map(t=>`<button class="tab ${tab===t?'active':''}" onclick="openIssue('${id}','${t}')">${t}</button>`).join("");
   let body="";
@@ -1243,25 +1250,24 @@ function rescheduleTopic(tid){
     <div class="kv"><b>原排期</b><span>${oldM? meetingLabel(oldM):'—'}</span></div>
     <div class="kv"><b>新排期</b><span>${meetingLabel(newM)}</span></div>
     <div class="prose" style="margin-top:8px">决策 #7：任何挪动都算重排——新建议题、旧 ${tid} 标 <b>需重排</b>。一致性 &gt; 便利性："本来早上要讲、临时挪晚上"也是有意义的历史。报告文档不动（决策 #11）。</div>
-    <div class="sec">重排理由（必填 · 落决策事件）</div>
-    <textarea id="rsReason" rows="4" placeholder="例：早会议程已满，挪到当日晚会"></textarea>
+    <div class="sec">重排理由（可选 · 填了落决策事件）</div>
+    <textarea id="rsReason" rows="4" placeholder="例：早会议程已满，挪到当日晚会（可不填）"></textarea>
   `, `<button class="btn primary" onclick="doReschedule('${tid}','${newMid}')">确认重排</button><button class="btn ghost" onclick="closeDrawer()">取消</button>`);
 }
 function doReschedule(tid,newMid){
   const txt=(document.getElementById("rsReason").value||"").trim();
-  if(!txt){ toast("请填写重排理由"); return; }
   const t=topicById(tid); const i=issueById(t.issueId);
   const oldM = t.meetingId? meetingById(t.meetingId) : null;
   const newM = meetingById(newMid);
   // 旧议题：标需重排（保留历史）；从 meeting.agenda 移除
-  t.status="需重排"; t.conclusion=`手动重排：${txt}`;
+  t.status="需重排"; t.conclusion=txt? `手动重排：${txt}` : "手动重排（未填理由）";
   if(oldM) oldM.agenda = oldM.agenda.filter(x=>x!==tid);
   // 新议题：手动排期
   const nid="TPC-"+(++seq.topic);
   store.topics.unshift({ id:nid, issueId:i.id, meetingId:newMid, status:"待汇报", scheduledBy:"manual", conclusion:null });
   i.topicIds.push(nid);
   if(!newM.agenda.includes(nid)) newM.agenda.push(nid);
-  ev(i,"议题重排",store.role,`${oldM? meetingLabel(oldM):'待排期'} → ${meetingLabel(newM)}；旧 ${tid} 标需重排；新建 ${nid}（手动）；理由：${txt}`,true);
+  ev(i,"议题重排",store.role,`${oldM? meetingLabel(oldM):'待排期'} → ${meetingLabel(newM)}；旧 ${tid} 标需重排；新建 ${nid}（手动）${txt?`；理由：${txt}`:'（未填理由）'}`,true);
   closeDrawer();
   toast(`已重排：${oldM? meetingLabel(oldM):'待排期'} → ${meetingLabel(newM)}（新 ${nid}）`);
   render();
@@ -1368,23 +1374,24 @@ function concludePrompt(tid,outcome){
     <div class="prose">${isReject
       ? '决策 #7：<b>驳回 ≠ 需重排</b>——驳回是结论问题（评审会判定结论不成立），Issue 从 已解决 退回 处理中，旧议题标驳回留作历史；复盘后重新走审批 → 新议题。对称于审批驳回 `审批中→处理中`。'
       : '需重排是时间问题（议程没排上 / 临时改期）——新建一条议题留待重新排期，旧议题标需重排留作历史。报告文档不动（决策 #11）。'}</div>
-    <div class="sec">${isReject?'驳回意见':'重排说明'}（必填 · 落决策事件）</div>
-    <textarea id="cReason" rows="4" placeholder="${isReject?'例：根因证据不足，要求工程师补 FDC 趋势对照后再报':'例：今日议程已超时，挪到明日早会'}"></textarea>
+    <div class="sec">${isReject?'驳回意见（必填 · 落决策事件）':'重排说明（可选 · 填了落决策事件）'}</div>
+    <textarea id="cReason" rows="4" placeholder="${isReject?'例：根因证据不足，要求工程师补 FDC 趋势对照后再报':'例：今日议程已超时，挪到明日早会（可不填）'}"></textarea>
   `, `<button class="btn ${isReject?'danger':'warn'}" onclick="doConclude('${tid}','${outcome}')">确认${isReject?'驳回':'需重排'}</button><button class="btn ghost" onclick="closeDrawer()">取消</button>`);
 }
 function doConclude(tid,outcome){
   const txt=(document.getElementById("cReason").value||"").trim();
-  if(!txt){ toast("请填写理由"); return; }
+  // 决策 #7：驳回（结论问题）必填理由；需重排（时间问题）理由可选
+  if(outcome==="驳回" && !txt){ toast("请填写驳回意见"); return; }
   const t=topicById(tid); const i=issueById(t.issueId);
   if(outcome==="需重排"){
-    t.status="需重排"; t.conclusion=`需重排：${txt}`;
+    t.status="需重排"; t.conclusion=txt? `需重排：${txt}` : "需重排（未填理由）";
     const oldMid=t.meetingId;
     const oldM = oldMid? meetingById(oldMid) : null;
     if(oldM) oldM.agenda = oldM.agenda.filter(x=>x!==tid);
     const nid="TPC-"+(++seq.topic);
     store.topics.unshift({ id:nid, issueId:i.id, meetingId:null, status:"待汇报", scheduledBy:"manual", conclusion:null });
     i.topicIds.push(nid);
-    ev(i,"议题重排","会议主持人",`旧 ${tid} 标需重排（${txt}）；新建 ${nid} 待重新排期`,true);
+    ev(i,"议题重排","会议主持人",`旧 ${tid} 标需重排${txt?`（${txt}）`:'（未填理由）'}；新建 ${nid} 待重新排期`,true);
     pushNotif("会议主持人",nid,`「${i.title}」议题需重排，新建 ${nid} 待排期`,"待排期");
     tryMarkMeetingDone(oldMid);
     closeDrawer();
@@ -1704,7 +1711,7 @@ function drawer(title,sub,bodyHtml,footHtml,tabsHtml){
     <div class="body">${bodyHtml}</div><div class="foot">${footHtml||""}</div>`;
   d.classList.add("open"); document.getElementById("scrim").classList.add("open");
 }
-function closeDrawer(){ document.getElementById("drawer").classList.remove("open"); document.getElementById("scrim").classList.remove("open"); }
+function closeDrawer(){ document.getElementById("drawer").classList.remove("open"); document.getElementById("scrim").classList.remove("open"); store.drawerIssueId=null; store.drawerTab=null; }
 let toastT;
 function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove("show"),2200); }
 function resetAll(){ seed(); curMeeting=null; wbTab="全部"; closeDrawer(); render(); toast("已重置为初始 mock 数据"); }

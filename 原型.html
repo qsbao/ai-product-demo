@@ -202,6 +202,13 @@ const RULES = {
 // 模拟"现在"：以一个固定基准 + 自创建以来的相对小时推进。原型用 NOW_BASE 充当当前时刻。
 let CLOCK = 0; // 小时偏移，可在接入健康里"快进时间"演示超时
 
+/* 决策 #10 · 诊断字段（受控枚举，硬编码，呼应决策 #3 不做配置 UI）。
+   命名前缀 `diagnosis_*` 表明这是「工程师对 Issue 的诊断」，与上游事实字段、外部系统的 detection 字段区隔。 */
+const DIAGNOSIS_SUBTYPES = ["工艺漂移","设备异常","物料批次","量测误差","软件配置","其他"];
+/* 决策 #2 补 · Issue.source（事实字段，只读）：分诊升级 / 外部系统派单。
+   工作台是所有 Issue 的家，不是分诊的下游。 */
+const ISSUE_SOURCES = ["triage","external-MES","external-SPC"];
+
 /* ============================================================
    状态层 store（单一可变对象）+ 初始 mock
    ============================================================ */
@@ -240,6 +247,7 @@ function seed(){
   // store 已存在，现在安全填充预置 Issue（mkIssue→ev 会写 store.log）
   store.issues = [
     mkIssue("Fab3-Litho","曝光剂量持续漂移影响良率", -30, "审批中", 1, {
+      source:"triage",
       desc:"Fab3 Litho 区 ASML-07 曝光机，自上周保养后曝光剂量(Dose)持续正向漂移，CDU 跌出工艺窗口，已波及 3 个批次、良率影响约 1.8%（超 1.5% 阈值需上会）。",
       rootCause:"初判保养后能量传感器标定偏移，叠加光源老化；待 FDC 量测对比确认。",
       chartLevel:"ACP",
@@ -247,24 +255,53 @@ function seed(){
       relatedAlarms:[{id:"AL-2287",type:"曝光剂量漂移",time:"今日 06:12"},{id:"AL-2279",type:"CDU 越限",time:"昨日 22:40"}],
       params:[{name:"曝光剂量 Dose",value:"31.4 mJ/cm²",spec:"30.0 ± 0.5",status:"越上限"},{name:"CDU (3σ)",value:"4.8 nm",spec:"≤ 4.0",status:"越上限"},{name:"对焦偏移 Focus",value:"-3 nm",spec:"± 10",status:"正常"}],
       attachments:[{name:"FDC_trend_ASML07.csv",size:"212 KB"},{name:"CDU_map_L3-2218.png",size:"1.1 MB"}],
-      comments:[{actor:"赵工",text:"已联系设备组复标能量传感器，预计今日下午完成。",ts:"今日 09:20"},{actor:"周经理",text:"良率影响超阈值，需安排本周评审会汇报。",ts:"今日 09:35"}],
+      /* 审批中状态——已过「提交审批」门禁，诊断已填 */
+      diagnosisSubtype:"设备异常",
+      diagnosisDetection:"FDC 趋势确认 Dose 自上次能量传感器保养以来持续正向漂移；初步判定保养后标定偏移叠加光源老化，已联系设备组安排复标。",
     }),
     mkIssue("Fab2-Etch","刻蚀腔体温度异常待复核", -10, "处理中", 0, {
+      source:"triage",
       desc:"Fab2 Etch 区 LAM-03 刻蚀腔体温度读数较基线偏高约 4℃，待复核是传感器漂移还是实际工艺异常。",
       chartLevel:"KIP",
       params:[{name:"腔体温度",value:"68.2 ℃",spec:"64 ± 2",status:"越上限"}],
     }),
+    /* 外部系统 MES 直派：演示 Issue 入口不止分诊。无 sourceAlarmId、跳过分诊收件箱、靠通知卷入 owner。 */
+    mkIssue("Fab2-CMP","研磨垫磨损率偏高（MES 派单）", -6, "处理中", 0, {
+      source:"external-MES",
+      desc:"MES 派单：CMP-04 研磨垫已使用 9200 片（达上限 92%），磨损率较基线偏高 12%，需复核是否提前更换。",
+      chartLevel:"ACP",
+      affectedLots:[{lot:"L2-7301",wafers:25,stage:"CMP",priority:2,subType:"B"}],
+      params:[{name:"磨损率",value:"3.8 nm/wafer",spec:"≤ 3.4",status:"越上限"}],
+    }),
+    /* 外部系统 SPC 直派 + 已诊断：演示 diagnosis_* 填充态（已批准准备标记解决/已落字段都可展示）。 */
+    mkIssue("Fab3-Diff","炉管温度均匀性超规（SPC 派单·已诊断）", -20, "已批准", 0, {
+      source:"external-SPC",
+      desc:"SPC 派单：扩散炉 Tube-A 中心区温度均匀性 3σ 超出控制限，三日累计 6 个批次受影响。",
+      rootCause:"初判热电偶接触电阻异常导致温度读数漂移。",
+      chartLevel:"KIP",
+      affectedLots:[{lot:"L3-5102",wafers:25,stage:"扩散",priority:0,subType:"A"}],
+      params:[{name:"温度均匀性 3σ",value:"2.1 ℃",spec:"≤ 1.5",status:"越上限"}],
+      diagnosisSubtype:"设备异常",
+      diagnosisDetection:"现场测试发现中心区热电偶接触电阻异常；FDC 趋势确认温升曲线与基线偏离自上月维护后开始；初步判定为热电偶松脱，已联系设备组更换。",
+    }),
   ];
   // 给预置 issue 一条初始通知/事件
   pushNotif("审批经理", store.issues[0].id, `Issue ${store.issues[0].id}「${store.issues[0].title}」待你审批`, "待我审批");
+  // 外部派单：通知工程师（owner）—— 跳过分诊，需实时拉回
+  pushNotif("工程师", store.issues[2].id, `外部系统 MES 派单 ${store.issues[2].id}「${store.issues[2].title}」已分派到你名下`, "Issue 工作台");
 }
 function mkIssue(site,title,hAgo,status,level,extra){
   const id = "ISS-"+(++seq.issue);
   const owner = RULES.siteOwners[site] || "未分派";
   const chain = RULES.approvalLadder.map((r,i)=>({ level:i+1, role:r, name:roleName(r) }));
   const iss = { id, title, site, owner, status, currentLevel:level||0, approvalChain:chain,
-    createdAt:hAgo, sourceAlarmId:null, events:[], reportIds:[], pinned:false,
-    desc:"", rootCause:"", affectedLots:[], relatedAlarms:[], params:[], attachments:[], comments:[],
+    createdAt:hAgo,
+    // 决策 #2 补 · 来源事实字段：'triage'（分诊升级）/ 'external-MES' / 'external-SPC' …
+    source:"triage", sourceAlarmId:null,
+    events:[], reportIds:[], pinned:false,
+    desc:"", rootCause:"", affectedLots:[], relatedAlarms:[], params:[], attachments:[],
+    // 决策 #10 · 诊断字段（运营字段，标记解决时必填）
+    diagnosisSubtype:null, diagnosisDetection:"",
     // 决策 #9 因子层：Kanban、Risk 可覆盖；chartLevel 是上游事实（只读）
     kanban:false, kanbanAuto:false, kanbanOverride:null,
     risk:"低", riskAuto:"低", riskOverride:null,
@@ -278,7 +315,10 @@ function mkIssue(site,title,hAgo,status,level,extra){
   const rAuto = RULES.riskAuto(iss);
   iss.riskAuto = rAuto;
   if(iss.riskOverride==null) iss.risk = rAuto;
-  ev(iss,"创建","系统",`由告警升级创建，分派给 ${owner}；自动判定 Kanban=${kAuto?'✓':'✗'} · 风险=${rAuto} · 必须上会=${RULES.mustGoToMeeting(iss)?'✓':'✗'}`,true);
+  const srcLabel = iss.source==="triage" ? "由告警升级（或预置）创建"
+                 : iss.source && iss.source.startsWith("external-") ? `由外部系统 ${iss.source.slice("external-".length)} 派单创建`
+                 : "创建";
+  ev(iss,"创建","系统",`${srcLabel}，分派给 ${owner}；自动判定 Kanban=${kAuto?'✓':'✗'} · 风险=${rAuto} · 必须上会=${RULES.mustGoToMeeting(iss)?'✓':'✗'}`,true);
   if(status==="审批中"){ ev(iss,"提交审批",owner,`提交至 ${chain[0].role}`,true); }
   return iss;
 }
@@ -400,8 +440,14 @@ function escalate(id){
   const id2="ISS-"+(++seq.issue);
   const chain=RULES.approvalLadder.map((r,i)=>({level:i+1,role:r,name:roleName(r)}));
   const iss={ id:id2, title:a.type+"（升级自告警）", site:a.site, owner, status:"处理中", currentLevel:0,
-    approvalChain:chain, createdAt:CLOCK, sourceAlarmId:a.id, events:[], reportIds:[], pinned:false,
-    desc:"", rootCause:"", affectedLots:[], relatedAlarms:[{id:a.id,type:a.type,time:tsNow()}], params:[], attachments:[], comments:[] };
+    approvalChain:chain, createdAt:CLOCK,
+    source:"triage", sourceAlarmId:a.id,
+    events:[], reportIds:[], pinned:false,
+    desc:"", rootCause:"", affectedLots:[], relatedAlarms:[{id:a.id,type:a.type,time:tsNow()}], params:[], attachments:[],
+    diagnosisSubtype:null, diagnosisDetection:"",
+    kanban:false, kanbanAuto:false, kanbanOverride:null,
+    risk:"低", riskAuto:"低", riskOverride:null,
+    chartLevel:"" };
   ev(iss,"创建","你",`由告警 ${a.id} 升级；按注册表分派给 ${owner}；快照审批链 ${chain.map(c=>c.role).join("→")}`,true);
   store.issues.unshift(iss);
   toast(`已创建 ${id2}，分派给 ${owner} → 见 Issue 工作台`);
@@ -509,10 +555,80 @@ function primaryAction(i){
   }
   return "";
 }
-function submitApproval(id){ const i=issueById(id); i.status="审批中"; i.currentLevel=1; i.pinned=false;
+/* 决策 #10 · 提交审批 = 诊断门禁。审批经理审的就是这份诊断，未填则弹收集弹窗、填好后一并提交。 */
+function submitApproval(id){
+  const i=issueById(id);
+  if(!i.diagnosisSubtype || !i.diagnosisDetection){
+    submitApprovalPrompt(id); return;
+  }
+  i.status="审批中"; i.currentLevel=1; i.pinned=false;
   ev(i,"提交审批","你",`提交至 ${i.approvalChain[0].role}`,true);
   pushNotif("审批经理",id,`Issue ${id}「${i.title}」待你审批`,"待我审批");
   toast("已提交审批 → 审批经理「待我审批」+1"); render();
+}
+function submitApprovalPrompt(id){
+  const i=issueById(id);
+  const opts = DIAGNOSIS_SUBTYPES.map(v=>`<option value="${v}">${v}</option>`).join("");
+  drawer("提交审批 · 填写诊断", i.id+" · "+i.title, `
+    <div class="prose">提交审批前需先给出结构化诊断（决策 #10）——审批经理审的就是这份结论。<b>未填阻断提交</b>；首次填写无需修订理由。</div>
+    <div class="sec">诊断子类型（必填 · 受控枚举）</div>
+    <select class="fld" id="dgSub" style="width:240px"><option value="">— 选择 —</option>${opts}</select>
+    <div class="sec">检测描述（必填 · ≤200 字）</div>
+    <textarea id="dgDet" rows="4" maxlength="200" placeholder="例：FDC 趋势确认能量传感器自上次保养以来标定漂移；复标后剂量回到 30.0±0.3。"></textarea>
+  `, `<button class="btn primary" onclick="doSubmitApproval('${id}')">填好后提交</button><button class="btn ghost" onclick="closeDrawer()">取消</button>`);
+}
+function doSubmitApproval(id){
+  const sub=document.getElementById("dgSub").value;
+  const det=(document.getElementById("dgDet").value||"").trim();
+  if(!sub){ toast("请选择诊断子类型"); return; }
+  if(!det){ toast("请填写检测描述"); return; }
+  const i=issueById(id);
+  i.diagnosisSubtype=sub; i.diagnosisDetection=det;
+  ev(i,"填写诊断","你",`诊断子类型：${sub}；检测描述：${det}`,true);
+  i.status="审批中"; i.currentLevel=1; i.pinned=false;
+  ev(i,"提交审批","你",`提交至 ${i.approvalChain[0].role}`,true);
+  pushNotif("审批经理",id,`Issue ${id}「${i.title}」待你审批`,"待我审批");
+  closeDrawer();
+  toast("已填写诊断 + 提交审批");
+  render();
+}
+/* 处理中/审批后阶段修改诊断：owner + 审批经理可改，与 Kanban/Risk 因子覆盖一致。
+   首次填写不必填理由；修订必填理由，落决策事件。 */
+function editDiagnosisPrompt(id){
+  const i=issueById(id);
+  if(i.status==="已关闭"){ toast("已关闭，诊断只读"); return; }
+  if(store.role!=="工程师" && store.role!=="审批经理"){ toast("仅 owner / 审批经理可改诊断"); return; }
+  const firstFill = !i.diagnosisSubtype && !i.diagnosisDetection;
+  const opts = DIAGNOSIS_SUBTYPES.map(v=>`<option value="${v}" ${i.diagnosisSubtype===v?'selected':''}>${v}</option>`).join("");
+  drawer(firstFill?"填写诊断":"修改诊断", i.id+" · "+i.title, `
+    <div class="prose">${firstFill?'处理中提前填诊断——工作时随手记，提交审批时不必再弹窗。结构化结论，落「人的决策」一等事件。':'修订诊断需说明理由（呼应决策 #9 因子覆盖的留痕模式），落决策事件。'}</div>
+    <div class="sec">诊断子类型（必填 · 受控枚举）</div>
+    <select class="fld" id="dgSub" style="width:240px"><option value="">— 选择 —</option>${opts}</select>
+    <div class="sec">检测描述（必填 · ≤200 字）</div>
+    <textarea id="dgDet" rows="4" maxlength="200" placeholder="例：FDC 趋势确认能量传感器自上次保养以来标定漂移；复标后剂量回到 30.0±0.3。">${i.diagnosisDetection||''}</textarea>
+    ${firstFill?'':`<div class="sec">修订理由（必填 · 落决策事件 body）</div><textarea id="dgReason" rows="3" placeholder="例：复盘后发现初判子类型不准，应为「物料批次」"></textarea>`}
+  `, `<button class="btn ok" onclick="doEditDiagnosis('${id}', ${firstFill})">确认</button><button class="btn ghost" onclick="closeDrawer()">取消</button>`);
+}
+function doEditDiagnosis(id, firstFill){
+  const sub=document.getElementById("dgSub").value;
+  const det=(document.getElementById("dgDet").value||"").trim();
+  if(!sub){ toast("请选择诊断子类型"); return; }
+  if(!det){ toast("请填写检测描述"); return; }
+  const i=issueById(id);
+  if(firstFill){
+    i.diagnosisSubtype=sub; i.diagnosisDetection=det;
+    ev(i,"填写诊断",store.role,`诊断子类型：${sub}；检测描述：${det}`,true);
+    closeDrawer(); toast("已填写诊断"); render();
+    if(store.view!=="Issue 详情页") openIssue(id);
+  } else {
+    const reason=(document.getElementById("dgReason").value||"").trim();
+    if(!reason){ toast("请填写修订理由"); return; }
+    const oldSub=i.diagnosisSubtype;
+    i.diagnosisSubtype=sub; i.diagnosisDetection=det;
+    ev(i,"诊断修订",store.role,`子类型：${oldSub}→${sub}；理由：${reason}`,true);
+    closeDrawer(); toast("已修订诊断（落决策事件）"); render();
+    if(store.view!=="Issue 详情页") openIssue(id);
+  }
 }
 function resolveIssue(id){
   const i=issueById(id); i.status="已解决"; i.pinned=false;
@@ -571,7 +687,7 @@ function secMeta(i){
     <div class="kv"><b>必须上会<small class="muted"> · 派生</small></b><span>${mTag} <span class="muted" style="font-size:12px">${mustMeetWhy(i)}</span></span></div>
     <div class="kv"><b>负责人</b><span>${i.owner}（按 site→owner 注册表解析）</span></div>
     <div class="kv"><b>站点</b><span>${i.site}</span></div>
-    <div class="kv"><b>来源</b><span>${i.sourceAlarmId? "升级自告警 "+i.sourceAlarmId : "预置"}</span></div>
+    <div class="kv"><b>来源<small class="muted"> · 事实</small></b><span>${sourceLabel(i)}</span></div>
     <div class="kv"><b>时效</b><span>${isOverdue(i)?'<span class="tag t-danger">已超时</span>':(["处理中","审批中"].includes(i.status)? "剩 "+hoursLeft(i)+"h":"—")}</span></div>`;
 }
 function secChain(i){
@@ -612,40 +728,56 @@ function secReports(i){
 function secTimeline(i){
   return `<div class="tl">`+[...i.events].reverse().map(e=>`<div class="ev ${e.decision?'decision':''}"><div class="t">${e.type}</div><div class="m">${e.text}</div><div class="ts">${e.actor} · ${e.ts}</div></div>`).join("")+`</div>`;
 }
-function secDiscussion(i){
-  if(!i.comments||!i.comments.length) return `<div class="muted" style="font-size:12.5px">暂无讨论</div>`;
-  return i.comments.map(c=>`<div class="cmt"><div class="av">${c.actor.slice(0,1)}</div><div class="grow"><div class="who">${c.actor}</div><div class="txt">${c.text}</div><div class="ts">${c.ts}</div></div></div>`).join("");
+/* 来源（决策 #2 补）：'triage' → 分诊（升级自告警 X）/ 分诊（预置）；'external-*' → 外部派单（系统名）。
+   工作台不区分入口，详情里如实标。 */
+function sourceLabel(i){
+  if(i.source==="triage") return i.sourceAlarmId ? `分诊（升级自告警 ${i.sourceAlarmId}）` : "分诊（预置）";
+  if(i.source && i.source.startsWith("external-")) return `外部派单（${i.source.slice("external-".length)}）`;
+  return "—";
+}
+/* 决策 #10 · 诊断字段渲染：结构化结论（不是 comment），未填灰态、填了展示。
+   编辑入口落在区块内：owner + 审批经理 可点（已关闭只读）。首次填写不必填理由；修订必填。 */
+function secDiagnosis(i){
+  const canEdit = (store.role==="工程师" || store.role==="审批经理") && i.status!=="已关闭";
+  const filled = !!(i.diagnosisSubtype || i.diagnosisDetection);
+  const editBtn = canEdit
+    ? `<button class="btn sm" style="margin-left:8px" onclick="editDiagnosisPrompt('${i.id}')">${filled?'改诊断':'填诊断'}</button>`
+    : "";
+  if(!filled){
+    return `<div class="muted" style="font-size:12.5px">待填诊断（「提交审批」时必填——处理中可在此提前填，工作时随手记）${editBtn}</div>`;
+  }
+  return `<div class="kv"><b>子类型</b><span>${i.diagnosisSubtype?`<span class="tag t-brand">${i.diagnosisSubtype}</span>`:'—'}${editBtn}</span></div>
+    <div class="prose" style="margin-top:6px"><b>检测描述：</b>${i.diagnosisDetection||'—'}</div>`;
 }
 
 /* 抽屉：内容多 → 分页签(概览/事件/关联/讨论)，每段内再分区；当前主动作常驻底部 */
 function openIssue(id, tab){
   const i=issueById(id); if(!i) return;
   tab = tab || "概览";
-  const TABS=["概览","事件","关联","讨论"];
+  const TABS=["概览","事件","关联"];
   const tabBar=TABS.map(t=>`<button class="tab ${tab===t?'active':''}" onclick="openIssue('${id}','${t}')">${t}</button>`).join("");
   let body="";
   if(tab==="概览"){
     body = secMeta(i)
       + `<div class="sec">问题与根因</div>`+secAnalysis(i)
+      + `<div class="sec">工程师诊断（diagnosis_*）</div>`+secDiagnosis(i)
       + `<div class="sec">审批链（创建时快照）</div>`+secChain(i)
       + `<div class="sec">汇报记录</div>`+secReports(i);
   } else if(tab==="事件"){
     body = `<div class="sec">事件时间线（append-only · 只读追溯）</div>`+secTimeline(i);
-  } else if(tab==="关联"){
+  } else {
     body = `<div class="sec">受影响批次</div>`+secAffected(i)
       + `<div class="sec">关键参数 / 量测</div>`+secParams(i)
       + `<div class="sec">关联告警</div>`+secAlarms(i)
       + `<div class="sec">附件</div>`+secAttachments(i);
-  } else {
-    body = `<div class="sec">讨论 / 备注</div>`+secDiscussion(i);
   }
   drawer(`${i.title}`, `${i.id} · ${i.site}`, body, footFor(i), tabBar);
 }
 function footFor(i){
   let btns="";
   if(store.role==="审批经理" && i.status==="审批中"){
-    // 审批经理打开抽屉 → 直接批/驳，无需关闭回列表
-    btns = `<button class="btn ok" onclick="approveFromDrawer('${i.id}')">批准</button>`
+    // 审批经理打开抽屉 → 直接批/驳，无需关闭回列表（批准走 approvePrompt 收可选 comment）
+    btns = `<button class="btn ok" onclick="approvePrompt('${i.id}')">批准</button>`
          + `<button class="btn danger" onclick="rejectPrompt('${i.id}')">打回</button>`;
   } else {
     if(i.status==="处理中") btns=`<button class="btn primary" onclick="submitApproval('${i.id}');openIssue('${i.id}')">提交审批</button>`;
@@ -665,12 +797,10 @@ function footFor(i){
     + `<button class="btn ghost" onclick="openIssuePage('${i.id}')" title="整页可收藏/分享/打印">⤢ 展开为整页</button>`
     + `<button class="btn ghost" onclick="closeDrawer()">关闭</button>`;
 }
-// 抽屉内批准后：若仍在审批中（升到下一级）刷新抽屉，否则（走完链）关闭
-function approveFromDrawer(id){ approve(id); const i=issueById(id); if(i && i.status==="审批中") openIssue(id); else closeDrawer(); }
 // 角色感知的行内动作（详情整页工具条复用）
 function actionsInline(i){
   if(store.role==="审批经理" && i.status==="审批中")
-    return `<button class="btn ok sm" onclick="approve('${i.id}')">批准</button><button class="btn danger sm" onclick="rejectPrompt('${i.id}')">打回</button>`;
+    return `<button class="btn ok sm" onclick="approvePrompt('${i.id}')">批准</button><button class="btn danger sm" onclick="rejectPrompt('${i.id}')">打回</button>`;
   return primaryAction(i);
 }
 
@@ -698,6 +828,7 @@ VIEWS["Issue 详情页"] = ()=>{
       <div>
         ${card("关键信息", secMeta(i), true)}
         ${card("问题与根因", secAnalysis(i), true)}
+        ${card("工程师诊断（diagnosis_*）", secDiagnosis(i), true)}
         ${card("审批链（创建时快照）", secChain(i), true)}
         ${card("受影响批次", secAffected(i))}
         ${card("关键参数 / 量测", secParams(i))}
@@ -707,7 +838,6 @@ VIEWS["Issue 详情页"] = ()=>{
         ${card("关联告警", secAlarms(i))}
         ${card("附件", secAttachments(i))}
         ${card("汇报记录", secReports(i), true)}
-        ${card("讨论 / 备注", secDiscussion(i), true)}
       </div>
     </div>`;
 };
@@ -723,7 +853,7 @@ VIEWS["待我审批"] = ()=>{
         <div class="sub">${i.id} · ${i.site} · 负责人 ${i.owner} · <b>轮到：${cur?.role} ${cur?.name}</b>（第 ${i.currentLevel}/${i.approvalChain.length} 级）</div>
       </div>
       <div class="actions" onclick="event.stopPropagation()">
-        <button class="btn ok sm" onclick="approve('${i.id}')">批准</button>
+        <button class="btn ok sm" onclick="approvePrompt('${i.id}')">批准</button>
         <button class="btn danger sm" onclick="rejectPrompt('${i.id}')">打回</button>
         <button class="btn ghost sm" onclick="openIssue('${i.id}')">查看</button>
       </div></div>`;
@@ -733,8 +863,30 @@ VIEWS["待我审批"] = ()=>{
     <div class="hint">演示：点 <b>打回</b> → Issue 回「处理中」并在工程师工作台<b>置顶</b>、工程师收到通知；点 <b>批准</b> → 游标 +1，到顶则「已批准」。</div>
     <div class="card">${list.length? rows : `<div class="empty">没有待你审批的 Issue</div>`}</div>`;
 };
-function approve(id){ const i=issueById(id); const cur=i.approvalChain[i.currentLevel-1];
-  ev(i,"审批通过",cur.name,`${cur.role} 批准（第 ${i.currentLevel} 级）`,true);
+/* 决策 #5 补 · 批准可选 comment / 打回必填意见：都进 approve/reject 决策事件 body，不新增字段、不新增视图。
+   弹窗收意见后再调 approve(id, comment)；打回侧已有 rejectPrompt 走相同模式。 */
+function approvePrompt(id){
+  const i=issueById(id);
+  const cur=i.approvalChain[i.currentLevel-1];
+  drawer("批准 Issue", i.id+" · "+i.title, `
+    <div class="kv"><b>当前层级</b><span>${cur?.role} · ${cur?.name}（第 ${i.currentLevel}/${i.approvalChain.length} 级）</span></div>
+    <div class="sec">批准意见（可选 · 落 approve 事件 body）</div>
+    <textarea id="apvTxt" rows="3" placeholder="可空。如需说明放行理由可在此留言；不引入自由 comment 框，仅审批决策的 body。"></textarea>
+  `, `<button class="btn ok" onclick="doApprove('${id}')">确认批准</button><button class="btn ghost" onclick="closeDrawer()">取消</button>`);
+}
+function doApprove(id){
+  const txt=(document.getElementById("apvTxt").value||"").trim();
+  closeDrawer();
+  approve(id, txt);
+  // 若仍在审批中（升到下一级），抽屉里继续看新游标；否则视图自然刷新（render 已在 approve 里调）
+  const i=issueById(id);
+  if(i && i.status==="审批中" && store.role==="审批经理") openIssue(id);
+}
+function approve(id, comment){
+  const i=issueById(id); const cur=i.approvalChain[i.currentLevel-1];
+  const cmt = (comment||"").trim();
+  const cmtSuffix = cmt ? `；意见：${cmt}` : "";
+  ev(i,"审批通过",cur.name,`${cur.role} 批准（第 ${i.currentLevel} 级）${cmtSuffix}`,true);
   if(i.currentLevel < i.approvalChain.length){ i.currentLevel++; toast(`已批准 → 上交 ${i.approvalChain[i.currentLevel-1].role}`); }
   else { i.status="已批准"; ev(i,"审批完成","系统","全部层级通过，进入已批准",true);
     pushNotif("工程师",id,`Issue ${id} 审批通过，请标记解决`,"Issue 工作台"); toast("审批链走完 → Issue 已批准，已通知工程师"); }

@@ -148,6 +148,7 @@
       <select id="roleSel" onchange="setRole(this.value)">
         <option value="工程师">工程师</option>
         <option value="审批经理">审批经理</option>
+        <option value="PI">PI（制程整合工程师）</option>
         <option value="会议主持人">会议主持人</option>
         <option value="管理员">管理员</option>
       </select>
@@ -182,6 +183,10 @@ const RULES = {
   // engineer → team 注册表（本系统自有引用数据，管理员可改）—— 配合所有权共享 + team 默认视图（领域决策）
   // 同 team 内任何成员对该 team 的 Alarm/Issue 有完整操作权；assignee 仅作审批链锚点 + 「仅我的」过滤依据
   engineerTeams: { "李工":"Fab2-Team", "王工":"Fab2-Team", "赵工":"Fab3-Team", "陈工":"Fab3-Team" },
+  // 决策 #12 · site/工序 → PI 注册表（本系统自有引用数据，管理员可改）
+  // 与 site→owner、审批阶梯同类。Issue 创建时一次性 snapshot 一组 PI（可多人），写入 issue.piReviewers。
+  // PI 评论 = 与审批并行的参考意见，不阻塞经理审批；不进状态机出口条件。
+  piRegistry: { "Fab2-CMP":["孙工"], "Fab2-Etch":["孙工"], "Fab3-Litho":["林工"], "Fab3-Diff":["林工"] },
   // 决策 #9 · 因子层硬编码规则（先粗后细，对齐决策 #3 不做配置 UI）
   // Kanban 自动判定：受影响批次中任一 lot.priority==0（hot lot）→ Kanban
   isKanbanAuto: (iss)=> (iss.affectedLots||[]).some(l=>l.priority===0),
@@ -296,6 +301,8 @@ function seed(){
     view: "分诊收件箱",
     // 工程师角色身份。默认 team 视图下，仅用于 owner=me 的「仅我的」过滤；非演示角色 currentUser 无意义。
     currentUser: "李工",   // 属 Fab2-Team
+    // 决策 #12 · PI 角色身份（演示用）。默认 林工 以对齐预置审批中 Issue（Fab3-Litho · piReviewers=[林工]）。
+    currentPiUser: "林工",
     detailIssueId: null,   // 当前整页详情查看的 Issue
     detailReturn: null,    // 从哪个视图进入整页（返回用）
     drawerIssueId: null,   // 抽屉当前显示的 Issue（用于异步动作后同步重绘抽屉）
@@ -372,6 +379,10 @@ function seed(){
   });
   // 给预置 issue 一条初始通知/事件
   pushNotif("审批经理", store.issues[0].id, `Issue ${store.issues[0].id}「${store.issues[0].title}」待你审批`, "待我审批");
+  // 决策 #12 · 预置 审批中 Issue 同时机通知其 PI snapshot（并行，不阻塞审批）
+  (store.issues[0].piReviewers||[]).forEach(pi=>
+    pushNotif("PI", store.issues[0].id, `Issue ${store.issues[0].id}「${store.issues[0].title}」等你评意见（参考·不阻塞审批）`, "待我评论")
+  );
   // 外部派单：通知工程师（owner）—— 跳过分诊，需实时拉回
   pushNotif("工程师", store.issues[2].id, `外部系统 MES 派单 ${store.issues[2].id}「${store.issues[2].title}」已分派到你名下`, "Issue 工作台");
 }
@@ -450,7 +461,10 @@ function mkIssue(site,title,hAgo,status,level,extra){
   // 团队 snapshot：创建时一次性写入 issue.team，组织变动不追溯（与审批链 snapshot 同模式）
   const team = teamOf(owner);
   const chain = RULES.approvalLadder.map((r,i)=>({ level:i+1, role:r, name:roleName(r) }));
+  // 决策 #12 · PI snapshot：与审批链同时机一次性快照，作为并行轨道数据
+  const piReviewers = piReviewersOf(site);
   const iss = { id, title, site, owner, team, status, currentLevel:level||0, approvalChain:chain,
+    piReviewers,   // 决策 #12 · 创建时 snapshot 的 PI 列表（与审批阶梯并列的并行轨道）
     createdAt:hAgo,
     // 决策 #2 补 · 来源事实字段：'triage'（分诊升级）/ 'external-MES' / 'external-SPC' …
     source:"triage", sourceAlarmId:null,
@@ -481,6 +495,22 @@ function mkIssue(site,title,hAgo,status,level,extra){
 function roleName(r){ return ({ "三级经理":"刘经理","四级经理":"周经理","五级经理":"吴总" })[r]||r; }
 /* team 解析：engineer → team；用于 Issue 创建时 snapshot、以及分诊层的动态 lookup */
 function teamOf(eng){ return eng ? (RULES.engineerTeams[eng] || null) : null; }
+/* 决策 #12 · PI 解析：site → PI 列表；用于 Issue 创建时 snapshot（并行轨道数据）。
+   返回数组（可多人），无命中返回空数组——空数组意味着该 Issue 无 PI 会评（不卡审批，因为本就不阻塞）。 */
+function piReviewersOf(site){ return site ? (RULES.piRegistry[site] || []).slice() : []; }
+/* 当前 PI 是否已对该 Issue 评过意见（用于 待我评论 列表 + 详情按钮态） */
+function piCommentedBy(iss, user){
+  return (iss.events||[]).some(e=> e.type==="PI 评意见" && e.actor===user);
+}
+function piEvalCount(iss){
+  const total = (iss.piReviewers||[]).length;
+  const evaluated = new Set((iss.events||[]).filter(e=>e.type==="PI 评意见").map(e=>e.actor));
+  const evaluatedInSnapshot = (iss.piReviewers||[]).filter(p=>evaluated.has(p)).length;
+  return { evaluated: evaluatedInSnapshot, total };
+}
+function latestPiComment(iss){
+  return [...(iss.events||[])].reverse().find(e=>e.type==="PI 评意见");
+}
 
 /* mutators / helpers ----------------------------------------- */
 function ev(iss,type,actor,text,decision){
@@ -506,6 +536,12 @@ const derive = {
   overdue: ()=> store.issues.filter(i=> isOverdue(i) && !["已解决","已关闭"].includes(i.status)),
   escalated: ()=> store.issues.filter(i=> i.status==="审批中" && i.currentLevel>=2),
   myApprovals: ()=> store.issues.filter(i=> i.status==="审批中"),
+  // 决策 #12 · PI whose-turn：snapshot 含我 ∧ Issue 未关闭 ∧ 我未评过
+  myPiPending: ()=> store.issues.filter(i=>
+    (i.piReviewers||[]).includes(store.currentPiUser)
+    && i.status!=="已关闭"
+    && !piCommentedBy(i, store.currentPiUser)
+  ),
   // 决策 #7 派生视图：待汇报清单 = 议题已挂会议；待排期 = 议题无会议（自动排期未命中）
   scheduledTopics: ()=> store.topics.filter(t=> t.status==="待汇报" && t.meetingId),
   unscheduledTopics: ()=> store.topics.filter(t=> t.status==="待汇报" && !t.meetingId),
@@ -522,6 +558,7 @@ function hoursLeft(i){ return Math.round(RULES.SLA_HOURS - (CLOCK - i.createdAt)
 const NAV = {
   "工程师":     [["分诊收件箱","🗂"],["Issue 工作台","🛠"]],
   "审批经理":   [["待我审批","✅"]],
+  "PI":         [["待我评论","💬"]],
   "会议主持人": [["待汇报清单","📋"],["待排期","⏳"],["会议议程","📅"],["会议管理","🗓"]],
   "管理员":     [["接入健康","🩺"]],
 };
@@ -544,6 +581,7 @@ function renderNav(){
   let h = `<div class="navgroup"><div class="navlabel">${store.role} · 时刻</div>`;
   NAV[store.role].forEach(([v,ic])=>{
     const badge = v==="待我审批" ? derive.myApprovals().length
+                : v==="待我评论" ? derive.myPiPending().length
                 : v==="待汇报清单" ? derive.scheduledTopics().length
                 : v==="待排期" ? derive.unscheduledTopics().length
                 : 0;
@@ -562,6 +600,7 @@ function navItem(v,ic,badge){
 }
 function renderTop(){
   const sub = { "分诊收件箱":"工程师 · 入口时刻","Issue 工作台":"工程师 · 推进时刻","待我审批":"审批经理 · 轮到我",
+    "待我评论":"PI · 轮到我（与审批并行，不阻塞）",
     "待汇报清单":"会议主持人 · 会前","待排期":"会议主持人 · 待排期（派生视图）","会议议程":"会议主持人 · 会中","会议管理":"会议主持人 · Tier-1 CRUD",
     "接入健康":"管理员 · 入口","通知中心":"跨角色 · 早间",
     "Issue 全表":"Tier-1 · 全量浏览（只读为主）", "Issue 详情页":"Tier-1 · 实体详情（全量展开）" }[store.view]||"";
@@ -639,8 +678,9 @@ function escalate(id){
   const team=teamOf(owner);   // snapshot at creation
   const id2="ISS-"+(++seq.issue);
   const chain=RULES.approvalLadder.map((r,i)=>({level:i+1,role:r,name:roleName(r)}));
+  const piReviewers = piReviewersOf(a.site);
   const iss={ id:id2, title:a.type+"（升级自告警）", site:a.site, owner, team, status:"处理中", currentLevel:0,
-    approvalChain:chain, createdAt:CLOCK,
+    approvalChain:chain, piReviewers, createdAt:CLOCK,
     source:"triage", sourceAlarmId:a.id,
     events:[], topicIds:[], reportDocId:null, pinned:false,
     desc:"", rootCause:"", affectedLots:[], relatedAlarms:[{id:a.id,type:a.type,time:tsNow()}], params:[], attachments:[],
@@ -648,7 +688,8 @@ function escalate(id){
     kanban:false, kanbanAuto:false, kanbanOverride:null,
     risk:"低", riskAuto:"低", riskOverride:null,
     chartLevel:"" };
-  ev(iss,"创建","你",`由告警 ${a.id} 升级；按注册表分派给 ${owner}（team=${team||'—'}）；快照审批链 ${chain.map(c=>c.role).join("→")}`,true);
+  const piLabel = piReviewers.length ? `；快照 PI ${piReviewers.join("、")}（并行会评，不阻塞审批）` : "；无 PI 命中";
+  ev(iss,"创建","你",`由告警 ${a.id} 升级；按注册表分派给 ${owner}（team=${team||'—'}）；快照审批链 ${chain.map(c=>c.role).join("→")}${piLabel}`,true);
   store.issues.unshift(iss);
   toast(`已创建 ${id2}，分派给 ${owner} → 见 Issue 工作台`);
   render();
@@ -805,7 +846,9 @@ function submitApproval(id){
   i.status="审批中"; i.currentLevel=1; i.pinned=false;
   ev(i,"提交审批","你",`提交至 ${i.approvalChain[0].role}`,true);
   pushNotif("审批经理",id,`Issue ${id}「${i.title}」待你审批`,"待我审批");
-  toast("已提交审批 → 审批经理「待我审批」+1"); render();
+  // 决策 #12 · 与审批同时机通知 PI snapshot 名单（并行，不阻塞）
+  (i.piReviewers||[]).forEach(pi=> pushNotif("PI", id, `Issue ${id}「${i.title}」等你评意见（参考·不阻塞审批）`, "待我评论"));
+  toast(`已提交审批 → 审批经理「待我审批」+1${(i.piReviewers||[]).length?' · PI「待我评论」+1（并行）':''}`); render();
 }
 function submitApprovalPrompt(id){
   const i=issueById(id);
@@ -829,8 +872,10 @@ function doSubmitApproval(id){
   i.status="审批中"; i.currentLevel=1; i.pinned=false;
   ev(i,"提交审批","你",`提交至 ${i.approvalChain[0].role}`,true);
   pushNotif("审批经理",id,`Issue ${id}「${i.title}」待你审批`,"待我审批");
+  // 决策 #12 · 与审批同时机通知 PI snapshot 名单（并行，不阻塞）
+  (i.piReviewers||[]).forEach(pi=> pushNotif("PI", id, `Issue ${id}「${i.title}」等你评意见（参考·不阻塞审批）`, "待我评论"));
   closeDrawer();
-  toast("已填写诊断 + 提交审批");
+  toast(`已填写诊断 + 提交审批${(i.piReviewers||[]).length?' · PI「待我评论」+1（并行）':''}`);
   render();
 }
 /* 处理中/审批后阶段修改诊断：owner + 审批经理可改，与 Kanban/Risk 因子覆盖一致。
@@ -930,6 +975,32 @@ function secChain(i){
   }).join('<span class="arr">→</span>');
   return `<div class="chain">${chain}</div>`;
 }
+/* 决策 #12 · PI 会评区块：snapshot + 已评列表 + 当前 PI 自评入口（仅 PI 角色可见入口）。
+   评论已在事件时间线中，这里给一个聚焦的"PI 视角"区块辅助经理/工程师快速读懂技术意见走向。 */
+function secPiReviewers(i){
+  const list = i.piReviewers || [];
+  if(list.length===0){
+    return `<div class="muted" style="font-size:12.5px">该 Issue 无 PI snapshot 命中（按 site→PI 注册表，site=${i.site||'—'}）。PI 会评不阻塞审批——无命中不影响推进。</div>`;
+  }
+  const comments = (i.events||[]).filter(e=> e.type==="PI 评意见");
+  const evaluatedSet = new Set(comments.map(c=>c.actor));
+  const me = store.currentPiUser;
+  const isPiRole = store.role==="PI";
+  const canIComment = isPiRole && list.includes(me) && i.status!=="已关闭";
+  const snapshotChips = list.map(p=>{
+    const done = evaluatedSet.has(p);
+    return `<span class="node ${done?'done':''}">${p}${done?' ✓':''}</span>`;
+  }).join('<span class="arr">·</span>');
+  const cmtBlock = comments.length
+    ? comments.map(c=>`<div class="cmt"><div class="av">${(c.actor||'?').slice(0,1)}</div><div class="grow"><div class="who">${c.actor} · <span class="muted" style="font-weight:400">${c.ts}</span></div><div class="txt">${c.text}</div></div></div>`).join("")
+    : `<div class="muted" style="font-size:12.5px">尚无 PI 意见（决策 #12：不阻塞审批，可在审批通过后补评）</div>`;
+  const btn = canIComment
+    ? `<button class="btn sm" style="margin-left:8px" onclick="piCommentPrompt('${i.id}')">${evaluatedSet.has(me)?'追加意见':'写技术意见'}</button>`
+    : "";
+  return `<div class="chain">${snapshotChips}</div>
+    <div class="muted" style="font-size:12px;margin:6px 0 8px">已评 ${(()=>{ const n=list.filter(p=>evaluatedSet.has(p)).length; return n; })()}/${list.length}（参考意见，不阻塞审批）${btn}</div>
+    ${cmtBlock}`;
+}
 function secAnalysis(i){
   if(!i.desc && !i.rootCause) return `<div class="muted" style="font-size:12.5px">暂无问题描述</div>`;
   return `${i.desc?`<div class="prose">${i.desc}</div>`:""}${i.rootCause?`<div class="prose"><b>根因分析：</b>${i.rootCause}</div>`:""}`;
@@ -1014,6 +1085,7 @@ function openIssue(id, tab){
       + `<div class="sec">工程师诊断（diagnosis_*）</div>`+secDiagnosis(i)
       + `<div class="sec">报告文档（决策 #11）</div>`+secReportDoc(i)
       + `<div class="sec">审批链（创建时快照）</div>`+secChain(i)
+      + `<div class="sec">PI 会评（决策 #12 · 并行参考意见，不阻塞）</div>`+secPiReviewers(i)
       + `<div class="sec">议题历史</div>`+secTopics(i);
   } else if(tab==="事件"){
     body = `<div class="sec">事件时间线（append-only · 只读追溯）</div>`+secTimeline(i);
@@ -1031,8 +1103,12 @@ function footFor(i){
     // 审批经理打开抽屉 → 直接批/驳，无需关闭回列表（批准走 approvePrompt 收可选 comment）
     btns = `<button class="btn ok" onclick="approvePrompt('${i.id}')">批准</button>`
          + `<button class="btn danger" onclick="rejectPrompt('${i.id}')">打回</button>`;
-  } else {
-    if(i.status==="处理中") btns=`<button class="btn primary" onclick="submitApproval('${i.id}');openIssue('${i.id}')">提交审批</button>`;
+  } else if(store.role==="PI" && i.status!=="已关闭" && (i.piReviewers||[]).includes(store.currentPiUser)){
+    // 决策 #12 · PI 角色 + 命中 snapshot + 未关闭 → 写技术意见（不阻塞）
+    const already = piCommentedBy(i, store.currentPiUser);
+    btns = `<button class="btn primary" onclick="piCommentPrompt('${i.id}')">${already?'追加技术意见':'写技术意见'}</button>`;
+  } else if(store.role==="工程师" && i.status==="处理中"){
+    btns=`<button class="btn primary" onclick="submitApproval('${i.id}');openIssue('${i.id}')">提交审批</button>`;
     /* 决策 #4 / #9 · 已解决 是 ✓ 路径的"等上会"相位，无主动作（自动建议题 + 自动排期 + 上会成功自动关）。
        审批中由审批经理在批准弹窗里走；✗ 路径不进 已解决，已关闭也无主动作。 */
   }
@@ -1044,6 +1120,10 @@ function footFor(i){
 function actionsInline(i){
   if(store.role==="审批经理" && i.status==="审批中")
     return `<button class="btn ok sm" onclick="approvePrompt('${i.id}')">批准</button><button class="btn danger sm" onclick="rejectPrompt('${i.id}')">打回</button>`;
+  if(store.role==="PI" && i.status!=="已关闭" && (i.piReviewers||[]).includes(store.currentPiUser)){
+    const already = piCommentedBy(i, store.currentPiUser);
+    return `<button class="btn primary sm" onclick="piCommentPrompt('${i.id}')">${already?'追加技术意见':'写技术意见'}</button>`;
+  }
   return primaryAction(i);
 }
 
@@ -1078,6 +1158,7 @@ VIEWS["Issue 详情页"] = ()=>{
       </div>
       <div>
         ${card("报告文档（决策 #11）", secReportDoc(i), true)}
+        ${card("PI 会评（决策 #12 · 并行参考意见，不阻塞）", secPiReviewers(i), true)}
         ${card("事件时间线（append-only）", secTimeline(i), true)}
         ${card("关联告警", secAlarms(i))}
         ${card("附件", secAttachments(i))}
@@ -1086,14 +1167,14 @@ VIEWS["Issue 详情页"] = ()=>{
     </div>`;
 };
 
-/* ---- 4. 待我审批（审批经理·whose-turn） ---- */
+/* ---- 4. 待我审批（审批经理·whose-turn，行内带 PI 评论辅助列 · 决策 #12） ---- */
 VIEWS["待我审批"] = ()=>{
   const list=derive.myApprovals();
   const rows=list.map(i=>{
     const cur=i.approvalChain[i.currentLevel-1];
     return `<div class="row clickable" onclick="openIssue('${i.id}')">
       <div class="grow">
-        <div class="title">${i.title} ${statusTag("审批中")} ${isOverdue(i)?'<span class="tag t-danger">已超时</span>':''}</div>
+        <div class="title">${i.title} ${statusTag("审批中")} ${isOverdue(i)?'<span class="tag t-danger">已超时</span>':''} ${piEvalInlineBadge(i)}</div>
         <div class="sub">${i.id} · ${i.site} · 负责人 ${i.owner} · <b>轮到：${cur?.role} ${cur?.name}</b>（第 ${i.currentLevel}/${i.approvalChain.length} 级）</div>
       </div>
       <div class="actions" onclick="event.stopPropagation()">
@@ -1103,10 +1184,22 @@ VIEWS["待我审批"] = ()=>{
       </div></div>`;
   }).join("");
   return `
-    <div class="pagehead"><h1>待我审批</h1><p>被「工程师提交审批」卷入。多级审批不是多状态——同一个「审批中」+ <code>current_level</code> 游标逐级推进。</p></div>
-    <div class="hint">演示：点 <b>打回</b> → Issue 回「处理中」并在工程师工作台<b>置顶</b>、工程师收到通知；点 <b>批准</b> → 游标 +1，到顶则<b>自动推进</b>：必须上会=✓ 进「已解决」+ 自动建议题 + 自动排期；必须上会=✗ 直接「已关闭」。</div>
+    <div class="pagehead"><h1>待我审批</h1><p>被「工程师提交审批」卷入。多级审批不是多状态——同一个「审批中」+ <code>current_level</code> 游标逐级推进。<b>行内 PI 已评 N/M 辅助列</b>（决策 #12）= 参考，不阻塞——你可在 PI 未评时就批。</p></div>
+    <div class="hint">演示：点 <b>打回</b> → Issue 回「处理中」并在工程师工作台<b>置顶</b>、工程师收到通知；点 <b>批准</b> → 游标 +1，到顶则<b>自动推进</b>：必须上会=✓ 进「已解决」+ 自动建议题 + 自动排期；必须上会=✗ 直接「已关闭」。鼠标移到「PI 已评」标签可看最新意见摘要。</div>
     <div class="card">${list.length? rows : `<div class="empty">没有待你审批的 Issue</div>`}</div>`;
 };
+/* 决策 #12 · 行内辅助标签：PI 已评 N/M（鼠标悬浮显示最新意见摘要）。
+   仅辅助，不进审批出口；色板 = 全评 t-ok / 部分 t-warn / 无 t-gray，方便经理扫视。 */
+function piEvalInlineBadge(i){
+  const { evaluated, total } = piEvalCount(i);
+  if(total===0) return `<span class="tag t-gray" title="该 Issue 无 PI snapshot 命中（不影响审批）">无 PI</span>`;
+  const latest = latestPiComment(i);
+  const tip = latest
+    ? `最新：${latest.actor} · ${latest.ts}\n${(latest.text||'').slice(0,120)}`
+    : `PI snapshot：${(i.piReviewers||[]).join("、")}（尚无意见 · 不影响审批）`;
+  const cls = evaluated===total ? "t-ok" : evaluated>0 ? "t-warn" : "t-gray";
+  return `<span class="tag ${cls}" title="${tip.replace(/"/g,'&quot;')}">PI 已评 ${evaluated}/${total}${latest?'':' · 仅参考'}</span>`;
+}
 /* 决策 #5 补 · 批准可选 comment / 打回必填意见：都进 approve/reject 决策事件 body，不新增字段、不新增视图。
    弹窗收意见后再调 approve(id, comment)；打回侧已有 rejectPrompt 走相同模式。 */
 function approvePrompt(id){
@@ -1171,6 +1264,67 @@ function doReject(id){
   ev(i,"审批打回",cur.name,`${cur.role} 打回：${txt}`,true);
   pushNotif("工程师",id,`Issue ${id} 被 ${cur.role} 打回：${txt}`,"Issue 工作台");
   closeDrawer(); toast("已打回 → 工程师工作台置顶 + 通知"); render();
+}
+
+/* ---- 4b. 待我评论（PI · whose-turn，与审批并行，不阻塞经理） ----
+   决策 #12：PI 评意见 = 参考意见，不进状态机出口；与审批同时机被卷入；可在任何非已关闭阶段评。
+   命中条件 = piReviewers 含我 ∧ Issue 未关闭 ∧ 我未评过；已评 / 已关闭即移出。 */
+VIEWS["待我评论"] = ()=>{
+  const me = store.currentPiUser;
+  const list = derive.myPiPending();
+  // 演示用：允许切换 PI 身份（孙工 / 林工），观察 snapshot 命中差异
+  const pis = Array.from(new Set(Object.values(RULES.piRegistry).flat()));
+  const switcher = `<div class="tabs">` + pis.map(p=>
+    `<button class="tab ${p===me?'active':''}" onclick="store.currentPiUser='${p}';render()">${p}</button>`
+  ).join("") + `</div>`;
+  const rows = list.map(i=>{
+    const cur = i.status==="审批中" ? i.approvalChain[i.currentLevel-1] : null;
+    const statusLine = i.status==="审批中"
+      ? `审批进行中 · 轮到 ${cur?.role}（PI 不阻塞，可在此前/同时/之后评）`
+      : `Issue 状态：${i.status} · PI 可补评，长期附在 Issue 上`;
+    return `<div class="row clickable" onclick="openIssue('${i.id}')">
+      <div class="grow">
+        <div class="title">${i.title} ${statusTag(i.status)} ${mustMeetTag(i)} ${isOverdue(i)?'<span class="tag t-danger">已超时</span>':''}</div>
+        <div class="sub">${i.id} · ${i.site} · 负责人 ${i.owner} · ${statusLine}</div>
+      </div>
+      <div class="actions" onclick="event.stopPropagation()">
+        <button class="btn primary sm" onclick="piCommentPrompt('${i.id}')">写技术意见</button>
+        <button class="btn ghost sm" onclick="openIssue('${i.id}')">查看</button>
+      </div></div>`;
+  }).join("");
+  return `
+    <div class="pagehead"><h1>待我评论</h1><p>被「工程师提交审批」<b>同时机</b>卷入。<b>参考意见，不阻塞经理审批</b>（决策 #12）——经理可在你未评时就批；你也可在审批通过后补评，评论长期附在 Issue 上喂事后归因。</p></div>
+    <div class="hint">演示：切换 PI 身份观察 snapshot 命中差异（按 site→PI 注册表创建时一次性快照）。「写技术意见」= 落 <code>pi-comment</code> 事件进时间线 + 待我审批面板"PI 已评"+1，但<b>不影响经理审批出口</b>。</div>
+    <div class="toolbar">${switcher}<span class="muted" style="font-size:12.5px">当前 PI：${me} · 待评 ${list.length} 条</span></div>
+    <div class="card">${list.length? rows : `<div class="empty">没有等你评意见的 Issue（snapshot 未命中、已评或已关闭都会移出）</div>`}</div>`;
+};
+/* PI 写技术意见：必填正文；落 append-only `pi-comment` 事件（决策 #12 / #6）。
+   不阻塞经理审批；可在任何非已关闭阶段评（含审批中、已解决、关闭前）。 */
+function piCommentPrompt(id){
+  const i = issueById(id);
+  if(!i) return;
+  if(i.status==="已关闭"){ toast("已关闭，PI 评意见只读"); return; }
+  if(store.role!=="PI"){ toast("仅 PI 角色可写技术意见"); return; }
+  const me = store.currentPiUser;
+  if(!(i.piReviewers||[]).includes(me)){ toast(`${me} 不在该 Issue 的 PI snapshot 中`); return; }
+  const already = piCommentedBy(i, me);
+  drawer((already?"补发技术意见":"写技术意见")+" · PI", i.id+" · "+i.title, `
+    <div class="prose">决策 #12：PI 评论是<b>参考意见，不阻塞经理审批</b>——评了就有内容可被读到、可分析。append-only：无修改/撤回，需修订就再发一条。${already?'<br><b>注：你已发过意见，此次会作为新一条追加。</b>':''}</div>
+    <div class="kv"><b>PI snapshot</b><span>${(i.piReviewers||[]).join("、")||'—'}（创建时按 site→PI 注册表快照）</span></div>
+    <div class="sec">技术意见（必填 · 正文）</div>
+    <textarea id="piTxt" rows="5" placeholder="例：FDC 趋势对照确认能量传感器漂移属设备组负责；建议同步复标 Tube-B/C 避免下批次再现。"></textarea>
+  `, `<button class="btn primary" onclick="doPiComment('${id}')">提交意见</button><button class="btn ghost" onclick="closeDrawer()">取消</button>`);
+}
+function doPiComment(id){
+  const txt = (document.getElementById("piTxt").value||"").trim();
+  if(!txt){ toast("请填写技术意见"); return; }
+  const i = issueById(id);
+  const me = store.currentPiUser;
+  ev(i, "PI 评意见", me, txt, true);
+  pushNotif("审批经理", id, `Issue ${id} 收到 PI ${me} 的技术意见（参考，不阻塞审批）`, "待我审批");
+  closeDrawer();
+  toast(`已发表技术意见 → 落事件时间线 + 经理面板辅助列 +1`);
+  render();
 }
 
 /* ---- 因子层覆盖（决策 #9）：Kanban / Risk，owner + 审批经理可改、必填理由、落决策事件 ----
@@ -1669,16 +1823,26 @@ VIEWS["接入健康"] = ()=>{
   const reg=Object.entries(RULES.siteOwners).map(([site,owner])=>`<div class="row">
     <div class="grow"><div class="title">${site}</div><div class="sub">站点负责人</div></div>
     <div class="actions"><input class="fld" style="width:120px" value="${owner}" onchange="setOwner('${site}',this.value)"></div></div>`).join("");
+  // 决策 #12 · site/工序 → PI 注册表（参考数据 · 管理员可改）；新建 Issue 时按此 snapshot piReviewers
+  const piReg=Object.entries(RULES.piRegistry).map(([site,pis])=>`<div class="row">
+    <div class="grow"><div class="title">${site}</div><div class="sub">PI（多人逗号分隔）</div></div>
+    <div class="actions"><input class="fld" style="width:200px" value="${(pis||[]).join("，")}" onchange="setPiReg('${site}',this.value)"></div></div>`).join("");
   return `
-    <div class="pagehead"><h1>接入健康</h1><p>管理员入口：上游事实数据同步是否正常。下方参考数据是 Tier-1 CRUD 的主场（改 owner 会影响新 Issue 的分派解析）。</p></div>
+    <div class="pagehead"><h1>接入健康</h1><p>管理员入口：上游事实数据同步是否正常。下方参考数据是 Tier-1 CRUD 的主场（改 owner / PI 会影响新 Issue 的分派与会评 snapshot 解析）。</p></div>
     <div class="grid2">
-      <div><div class="sec">数据源（事实来源 · 只读同步）</div><div class="card">${src}</div></div>
+      <div><div class="sec">数据源（事实来源 · 只读同步）</div><div class="card">${src}</div>
+        <div class="sec">site/工序 → PI 注册表（Tier-1 · 决策 #12）</div><div class="card">${piReg}</div></div>
       <div><div class="sec">参考数据 · site→owner 注册表（Tier-1）</div><div class="card">${reg}</div>
         <div class="sec">审批阶梯（引用数据）</div><div class="card"><div class="row"><div class="grow muted" style="font-size:13px">${RULES.approvalLadder.join(" → ")}</div></div></div></div>
     </div>`;
 };
 function retrySync(id){ const s=store.integrationSources.find(x=>x.id===id); s.status="ok"; s.lastSync="刚刚"; s.err=null; toast(s.name+" 同步恢复正常"); render(); }
 function setOwner(site,val){ RULES.siteOwners[site]=val.trim()||RULES.siteOwners[site]; toast(`已更新 ${site} 负责人 → ${RULES.siteOwners[site]}`); }
+function setPiReg(site,val){
+  const list = (val||"").split(/[，,、\s]+/).map(s=>s.trim()).filter(Boolean);
+  RULES.piRegistry[site] = list;
+  toast(`已更新 ${site} PI → ${list.join("、")||'（空）'}`);
+}
 
 /* ---- ★ 通知中心（跨角色） ---- */
 VIEWS["通知中心"] = ()=>{

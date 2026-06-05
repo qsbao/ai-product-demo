@@ -552,6 +552,26 @@ const derive = {
 function isOverdue(i){ return (CLOCK*1 - i.createdAt) > RULES.SLA_HOURS && ["处理中","审批中"].includes(i.status); }
 function hoursLeft(i){ return Math.round(RULES.SLA_HOURS - (CLOCK - i.createdAt)); }
 
+/* 决策 #13 · 反馈SLA + 逾期升档 = 三档派生标记（累积不撤；UI 取最重那一档展示）。
+   标签直接用自然语句，不引入 T1/T2/T3 内部编码——通知文案 / 工作台角标 / 升级清单端到端同名。
+   注：当前 isOverdue() 按 createdAt + Nh 计；"反馈"语义 / 计时零点是决策 #13 的 TODO，先把 UI 标签就位，behavior 锁定时统一收口。 */
+const OVERDUE_TIERS = [
+  { hours: 72, label: "超过72小时未反馈" },
+  { hours: 48, label: "超过48小时未反馈" },
+  { hours: 24, label: "超过24小时未反馈" },
+];
+function overdueMarkLabel(i){
+  if(!isOverdue(i)) return "";
+  const h = CLOCK - i.createdAt;
+  // 严格 `>` 以对齐 isOverdue 的 `>` 与"超过 Nh"的字面语义——h=72 仍属 48 档，h=72.01 才进 72 档。
+  for(const t of OVERDUE_TIERS){ if(h > t.hours) return t.label; }
+  return "";
+}
+function overdueMarkTag(i){
+  const label = overdueMarkLabel(i);
+  return label ? `<span class="tag t-danger">${label}</span>` : "";
+}
+
 /* ============================================================
    角色 → 时刻视图 映射
    ============================================================ */
@@ -735,7 +755,7 @@ VIEWS["Issue 工作台"] = ()=>{
     const ownerTag = (i.owner && i.owner!==me) ? ` <span class="tag t-info">同事</span>` : "";
     return `<div class="row ${i.pinned?'pinned':''} clickable" onclick="openIssue('${i.id}')">
       <div class="grow">
-        <div class="title">${i.pinned?'📌 ':''}${i.title} ${gateBadge} ${statusTag(i.status)} ${od?`<span class="tag t-danger">已超时</span>`:(hl<=8&&["处理中","审批中"].includes(i.status)?`<span class="tag t-warn">剩 ${hl}h</span>`:"")}${docBadge}</div>
+        <div class="title">${i.pinned?'📌 ':''}${i.title} ${gateBadge} ${statusTag(i.status)} ${od?overdueMarkTag(i):(hl<=8&&["处理中","审批中"].includes(i.status)?`<span class="tag t-warn">剩 ${hl}h</span>`:"")}${docBadge}</div>
         <div class="sub">${i.id} · ${i.site} · 负责人 ${i.owner}${ownerTag}${i.status==="审批中"?` · 审批至 ${i.approvalChain[i.currentLevel-1]?.role||""}`:""}${topicHintSub(i)}</div>
       </div>
       <div class="actions" onclick="event.stopPropagation()">${primaryAction(i)}
@@ -956,7 +976,7 @@ function secMeta(i){
     ? '<span class="tag t-purple">必须上会</span>'
     : '<span class="tag t-gray">非必须上会</span>';
   return `
-    <div class="kv"><b>状态</b><span>${statusTag(i.status)} ${isOverdue(i)?'<span class="tag t-danger">已超时</span>':''}</span></div>
+    <div class="kv"><b>状态</b><span>${statusTag(i.status)} ${overdueMarkTag(i)}</span></div>
     <div class="kv"><b>Kanban<small class="muted"> · 因子</small></b><span>${kTag} <span class="muted" style="font-size:12px">${kSrc}</span>${kBtn}</span></div>
     <div class="kv"><b>风险<small class="muted"> · 因子</small></b><span>${rTag} <span class="muted" style="font-size:12px">${rSrc}</span>${rBtn}</span></div>
     <div class="kv"><b>子批<small class="muted"> · 上游</small></b><span class="muted" style="font-size:12.5px">${subList}（lot.subType，只读）</span></div>
@@ -965,7 +985,7 @@ function secMeta(i){
     <div class="kv"><b>负责人</b><span>${i.owner}（按 site→owner 注册表解析）</span></div>
     <div class="kv"><b>站点</b><span>${i.site}</span></div>
     <div class="kv"><b>来源<small class="muted"> · 事实</small></b><span>${sourceLabel(i)}</span></div>
-    <div class="kv"><b>时效</b><span>${isOverdue(i)?'<span class="tag t-danger">已超时</span>':(["处理中","审批中"].includes(i.status)? "剩 "+hoursLeft(i)+"h":"—")}</span></div>`;
+    <div class="kv"><b>时效</b><span>${isOverdue(i)?overdueMarkTag(i):(["处理中","审批中"].includes(i.status)? "剩 "+hoursLeft(i)+"h":"—")}</span></div>`;
 }
 function secChain(i){
   const chain=i.approvalChain.map(c=>{
@@ -1145,7 +1165,7 @@ VIEWS["Issue 详情页"] = ()=>{
   return `
     <div class="toolbar"><button class="btn ghost sm" onclick="go('${back}')">← 返回${back}</button>${actionsInline(i)}</div>
     <div id="pageDeep" class="hint">🔗 深链：<span class="mono">运营系统/issues/${i.id}</span> —— 整页有独立地址，可收藏 / 分享 / 打印；与抽屉<b>共用同一组区块渲染器</b>，区别只是这里全部展开、不裁剪。</div>
-    <div class="pagehead"><h1>${i.title} ${statusTag(i.status)} ${isOverdue(i)?'<span class="tag t-danger">已超时</span>':''}</h1>
+    <div class="pagehead"><h1>${i.title} ${statusTag(i.status)} ${overdueMarkTag(i)}</h1>
       <p>${i.id} · ${i.site} · 负责人 ${i.owner} · <span class="tag t-gray">Tier-1 实体详情页</span></p></div>
     <div class="grid2">
       <div>
@@ -1174,7 +1194,7 @@ VIEWS["待我审批"] = ()=>{
     const cur=i.approvalChain[i.currentLevel-1];
     return `<div class="row clickable" onclick="openIssue('${i.id}')">
       <div class="grow">
-        <div class="title">${i.title} ${statusTag("审批中")} ${isOverdue(i)?'<span class="tag t-danger">已超时</span>':''} ${piEvalInlineBadge(i)}</div>
+        <div class="title">${i.title} ${statusTag("审批中")} ${overdueMarkTag(i)} ${piEvalInlineBadge(i)}</div>
         <div class="sub">${i.id} · ${i.site} · 负责人 ${i.owner} · <b>轮到：${cur?.role} ${cur?.name}</b>（第 ${i.currentLevel}/${i.approvalChain.length} 级）</div>
       </div>
       <div class="actions" onclick="event.stopPropagation()">
@@ -1284,7 +1304,7 @@ VIEWS["待我评论"] = ()=>{
       : `Issue 状态：${i.status} · PI 可补评，长期附在 Issue 上`;
     return `<div class="row clickable" onclick="openIssue('${i.id}')">
       <div class="grow">
-        <div class="title">${i.title} ${statusTag(i.status)} ${mustMeetTag(i)} ${isOverdue(i)?'<span class="tag t-danger">已超时</span>':''}</div>
+        <div class="title">${i.title} ${statusTag(i.status)} ${mustMeetTag(i)} ${overdueMarkTag(i)}</div>
         <div class="sub">${i.id} · ${i.site} · 负责人 ${i.owner} · ${statusLine}</div>
       </div>
       <div class="actions" onclick="event.stopPropagation()">
@@ -1890,7 +1910,7 @@ VIEWS["Issue 全表"] = ()=>{
   const sel = statuses.map(s=>`<option ${tblStatus===s?'selected':''}>${s}</option>`).join("");
   const rows = list.map(i=>{
     const od=isOverdue(i); const hl=hoursLeft(i);
-    const sla = od? `<span class="tag t-danger">已超时</span>` : (["处理中","审批中"].includes(i.status)? `${hl}h` : "—");
+    const sla = od? overdueMarkTag(i) : (["处理中","审批中"].includes(i.status)? `${hl}h` : "—");
     const mustCell = mustMeet(i)
       ? `<span class="tag t-purple" title="${mustMeetWhy(i)}">必须上会</span>`
       : `<span class="tag t-gray" title="${mustMeetWhy(i)}">否</span>`;
